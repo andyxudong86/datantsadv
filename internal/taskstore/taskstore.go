@@ -348,6 +348,16 @@ func (s *Store) Done() error {
 	return s.writeSnapshot()
 }
 
+// Reset drops every task, leaving an empty store. It is used for a
+// from-scratch (fresh) migration run that must start with no residual state.
+func (s *Store) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks = map[string]*rec{}
+	s.pending = nil
+	return s.writeSnapshot()
+}
+
 //// ---- persistence ----
 
 const (
@@ -465,16 +475,18 @@ func (s *Store) writeSnapshot() error {
 		os.Remove(tmp)
 		return err
 	}
-	// truncate journal
+	// truncate journal (close the append-only handle first so the truncate
+	// works even where an append handle lacks GENERIC_WRITE, e.g. Windows)
 	if s.journal != nil {
-		if err := s.journal.Truncate(0); err != nil {
+		if err := s.journal.Close(); err != nil {
 			return err
 		}
-		if _, err := s.journal.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		s.journalBytes = 0
+		s.journal = nil
 	}
+	if err := os.Truncate(s.journalPath, 0); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	s.journalBytes = 0
 	return nil
 }
 

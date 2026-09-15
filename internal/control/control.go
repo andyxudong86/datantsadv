@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	migratev1 "datants/gen/migrate/v1"
+	"datants/internal/history"
 	"datants/internal/taskstore"
 )
 
@@ -39,6 +40,9 @@ type Config struct {
 	Logger *log.Logger
 	// ProgressInterval is how often cumulative stats are logged. Default 10s.
 	ProgressInterval time.Duration
+	// History, if set, records each migration run (status + summary) for the
+	// web UI and for post-hoc inspection of past migrations.
+	History *history.Store
 }
 
 // Controller is the orchestrator. It is safe for concurrent use.
@@ -52,8 +56,12 @@ type Controller struct {
 	nextID int
 	// workers tracks liveness: id -> last heartbeat time.
 	workers map[string]time.Time
-	quit    chan struct{}
-	wg      sync.WaitGroup
+	// runState gates task claims (see RunState). Guarded by mu.
+	runState RunState
+	// active tracks the single run currently in flight. Guarded by mu.
+	active *activeRun
+	quit   chan struct{}
+	wg     sync.WaitGroup
 }
 
 // NewController creates a Controller over the given persistent task store.
@@ -71,12 +79,13 @@ func NewController(store *taskstore.Store, cfg Config) *Controller {
 		cfg.ProgressInterval = 10 * time.Second
 	}
 	return &Controller{
-		store:   store,
-		cfg:     cfg,
-		logger:  cfg.Logger,
-		nextID:  1,
-		workers: map[string]time.Time{},
-		quit:    make(chan struct{}),
+		store:    store,
+		cfg:      cfg,
+		logger:   cfg.Logger,
+		nextID:   1,
+		workers:  map[string]time.Time{},
+		runState: RunRunning, // legacy direct-ingest flow grants claims by default
+		quit:     make(chan struct{}),
 	}
 }
 
@@ -102,6 +111,7 @@ func (c *Controller) Start() {
 				if err == nil && n > 0 {
 					// reclaimed tasks wait for another worker to pick them up
 				}
+				c.finalizeIfDone()
 			}
 		}
 	}()
@@ -121,13 +131,23 @@ func (c *Controller) Start() {
 				st := c.store.Stats()
 				c.logger.Printf("progress: done=%d failed=%d in-progress=%d pending=%d",
 					st.Done, st.Failed, st.InProgress, st.Pending)
+				c.persistProgress()
+				c.finalizeIfDone()
 			}
 		}
 	}()
 }
 
-// Stop halts background loops and flushes/compacts the store.
+// Stop halts background loops, finalizes any in-flight run as stopped, and
+// flushes/compacts the store.
 func (c *Controller) Stop() error {
+	c.mu.Lock()
+	if c.active != nil {
+		c.finishRunLocked(c.active, history.StatusStopped)
+		c.active = nil
+		c.runState = RunIdle
+	}
+	c.mu.Unlock()
 	close(c.quit)
 	c.wg.Wait()
 	return c.store.Done()
@@ -150,6 +170,13 @@ func (c *Controller) Register(ctx context.Context, req *migratev1.RegisterReques
 
 // Claim implements migratev1.ControlServer.
 func (c *Controller) Claim(ctx context.Context, req *migratev1.ClaimRequest) (*migratev1.ClaimResponse, error) {
+	c.mu.Lock()
+	claimsAllowed := c.runState == RunRunning
+	c.mu.Unlock()
+	if !claimsAllowed {
+		// paused, idle or stopped: hold all tasks until the run resumes.
+		return &migratev1.ClaimResponse{}, nil
+	}
 	batch := int(req.GetBatchSize())
 	if batch <= 0 {
 		batch = c.cfg.DefaultBatch
@@ -182,6 +209,24 @@ func (c *Controller) Report(ctx context.Context, req *migratev1.ReportRequest) (
 	if c.logger != nil && len(failIDs) > 0 {
 		c.logger.Printf("report: worker=%s ok=%d failed=%d (e.g. %q)", req.GetWorkerId(), len(okIDs), len(failIDs), firstErrs)
 	}
+
+	// Account the payload into the active run (bytes/files). Fails on the run
+	// are double-counted in store.Fail below, but the run summary only cares
+	// about this run's outcome totals.
+	c.mu.Lock()
+	if r := c.active; r != nil {
+		r.filesDone += int64(len(okIDs))
+		r.filesFailed += int64(len(failIDs))
+		for _, res := range req.GetResults() {
+			if res.GetOk() {
+				r.bytesDone += res.GetBytes()
+			} else {
+				r.bytesFailed += res.GetBytes()
+			}
+		}
+	}
+	c.mu.Unlock()
+
 	if len(okIDs) > 0 {
 		if err := c.store.Complete(okIDs); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
@@ -205,6 +250,13 @@ func (c *Controller) Heartbeat(ctx context.Context, req *migratev1.HeartbeatRequ
 
 // Stats returns the store's current task distribution.
 func (c *Controller) Stats() taskstore.Stats { return c.store.Stats() }
+
+// logf logs through the controller's logger when one is configured.
+func (c *Controller) logf(format string, args ...interface{}) {
+	if c.logger != nil {
+		c.logger.Printf(format, args...)
+	}
+}
 
 // RegisterServer registers this controller on a gRPC server.
 func (c *Controller) RegisterServer(s grpc.ServiceRegistrar) {

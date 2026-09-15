@@ -22,6 +22,7 @@ import (
 
 	"datants/internal/clilog"
 	"datants/internal/control"
+	"datants/internal/history"
 	"datants/internal/taskstore"
 )
 
@@ -72,18 +73,24 @@ func main() {
 		logger.Fatalf("taskstore: %v", err)
 	}
 
+	hist, err := history.New(filepath.Join(*state, "history"))
+	if err != nil {
+		logger.Fatalf("history: %v", err)
+	}
+
 	ctrl := control.NewController(store, control.Config{
 		ClaimTimeout:    *claimTimeout,
 		ReclaimInterval: *reclaimInterval,
 		DefaultBatch:    *batch,
 		Logger:          logger,
+		History:         hist,
 	})
 
 	// scan + ingest (incremental: only changed entries become tasks)
 	if !*quiet {
-		logger.Printf("scanning %s -> %s", srcAbs, dstAbs)
+		logger.Printf("starting run: %s -> %s", srcAbs, dstAbs)
 	}
-	n, err := ctrl.ScanAndIngest(srcAbs, dstAbs, control.ScanConfig{
+	runID, err := ctrl.StartRun(srcAbs, dstAbs, control.RunConfig{
 		Workers:     *workers,
 		IncludeDirs: *includeDirs,
 		Ignore:      ignore,
@@ -92,11 +99,10 @@ func main() {
 	})
 	if err != nil {
 		store.Done()
-		logger.Fatalf("scan/ingest: %v", err)
+		logger.Fatalf("start run: %v", err)
 	}
 	if !*quiet {
-		st := ctrl.Stats()
-		logger.Printf("ingested %d new tasks (pending=%d)", n, st.Pending)
+		logger.Printf("run %s started", runID)
 	}
 
 	ctrl.Start()
@@ -117,6 +123,9 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-stop
+		if err := ctrl.StopRun(); err != nil && !*quiet {
+			logger.Printf("stop run: %v", err)
+		}
 		grpcServer.GracefulStop()
 	}()
 

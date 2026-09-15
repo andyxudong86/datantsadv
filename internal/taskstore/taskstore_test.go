@@ -219,6 +219,36 @@ func TestSnapshotCompaction(t *testing.T) {
 	}
 }
 
+func TestReset(t *testing.T) {
+	s := mustNew(t)
+	if err := s.Ingest(mkTasks(5)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim("w1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Stats(); got.Pending+got.InProgress+got.Done+got.Failed != 0 {
+		t.Fatalf("stats after reset: %+v", got)
+	}
+
+	// fresh store must survive a reload with empty state
+	dir := filepath.Dir(s.snapshotPath)
+	if err := s.Done(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Done()
+	if got := s2.Stats(); got.Pending+got.InProgress+got.Done+got.Failed != 0 {
+		t.Fatalf("reloaded store not empty: %+v", got)
+	}
+}
+
 func mustNew(t *testing.T) *Store {
 	t.Helper()
 	s, err := New(filepath.Join(t.TempDir(), "store"))
