@@ -1,7 +1,8 @@
 // Command da_control runs the Controller of the distributed migration tool: it
 // scans the source tree, diffs against the destination, ingests the resulting
 // file-level tasks into a persistent store, and serves the gRPC control plane
-// that Workers use to claim and report tasks.
+// that Workers use to claim and report tasks. It also serves the embedded web
+// console (http://127.0.0.1:8080 by default) for run control and monitoring.
 //
 // Usage:
 //
@@ -9,14 +10,19 @@
 package main
 
 import (
+	"context"
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -24,6 +30,8 @@ import (
 	"datants/internal/control"
 	"datants/internal/history"
 	"datants/internal/taskstore"
+	"datants/internal/webapi"
+	"datants/internal/webui"
 )
 
 var _ = syscall.SIGTERM
@@ -45,6 +53,8 @@ func main() {
 	fs.Var(&ignore, "ignore", "skip any path containing this fragment (repeatable)")
 	logDest := fs.String("log", "", "log file (default /var/log/da_control.log; \"-\" for stderr only)")
 	quiet := fs.Bool("quiet", false, "only print errors")
+	httpAddr := fs.String("http", "127.0.0.1:8080", "web console listen address (\"\" disables the console)")
+	webAuth := fs.String("web-auth", "", "optional HTTP basic auth for the console as user:pass")
 	fs.Parse(os.Args[1:])
 
 	if *src == "" || *dst == "" || *state == "" {
@@ -108,6 +118,32 @@ func main() {
 	ctrl.Start()
 	defer ctrl.Stop()
 
+	webUser, webPass := "", ""
+	if *webAuth != "" {
+		webUser, webPass, _ = strings.Cut(*webAuth, ":")
+		if webUser == "" || webPass == "" {
+			logger.Fatalf("--web-auth must be user:pass")
+		}
+	}
+
+	webHandler := buildWebHandler(ctrl, webUser, webPass)
+	var httpSrv *http.Server
+	if *httpAddr != "" {
+		httpSrv = &http.Server{
+			Addr:              *httpAddr,
+			Handler:           webHandler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Fatalf("http serve %s: %v", *httpAddr, err)
+			}
+		}()
+		if !*quiet {
+			logger.Printf("web console on http://%s", *httpAddr)
+		}
+	}
+
 	lis, err := net.Listen("tcp", *listen)
 	if err != nil {
 		logger.Fatalf("listen %s: %v", *listen, err)
@@ -126,6 +162,11 @@ func main() {
 		if err := ctrl.StopRun(); err != nil && !*quiet {
 			logger.Printf("stop run: %v", err)
 		}
+		if httpSrv != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			httpSrv.Shutdown(ctx)
+			cancel()
+		}
 		grpcServer.GracefulStop()
 	}()
 
@@ -140,4 +181,29 @@ func (m *multiFlag) String() string { return fmt.Sprintf("%v", []string(*m)) }
 func (m *multiFlag) Set(v string) error {
 	(*m) = append(*m, v)
 	return nil
+}
+
+// buildWebHandler assembles the web console: the webapi REST/SSE handlers
+// mounted behind the embedded SPA, wrapped in optional HTTP basic auth.
+func buildWebHandler(ctl *control.Controller, user, pass string) http.Handler {
+	h := webui.Handler(webapi.NewServer(ctl).Handler())
+	if user != "" {
+		h = basicAuth(user, pass, h)
+	}
+	return h
+}
+
+// basicAuth guards h with HTTP Basic authentication against user:pass.
+func basicAuth(user, pass string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		if !ok ||
+			subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="datants"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -1,0 +1,124 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DataNTs · 迁移控制台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">DataNTs 迁移控制台</div>
+    <div id="conn" class="badge badge-neutral">连接中…</div>
+  </header>
+
+  <nav>
+    <button data-view="dashboard" class="active">仪表盘</button>
+    <button data-view="history">迁移历史</button>
+    <button data-view="tasks">任务明细</button>
+    <button data-view="workers">Worker</button>
+  </nav>
+
+  <main>
+    <!-- 仪表盘 -->
+    <section id="dashboard" class="view active">
+      <div class="card">
+        <div class="card-title">运行状态
+          <span id="run-badge" class="badge badge-neutral">—</span>
+        </div>
+        <div id="run-detail" class="muted">当前没有活动迁移。</div>
+        <div class="progress">
+          <div id="progress-bar" class="progress-bar" style="width:0%"></div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div id="st-tsk" class="stat-num">0</div><div class="stat-label">任务</div></div>
+          <div class="stat"><div id="st-done" class="stat-num">0</div><div class="stat-label">完成</div></div>
+          <div class="stat"><div id="st-fail" class="stat-num">0</div><div class="stat-label">失败</div></div>
+          <div class="stat"><div id="st-rate" class="stat-num">0</div><div class="stat-label">速率</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">控制</div>
+        <div class="controls">
+          <button id="btn-pause" disabled>暂停</button>
+          <button id="btn-resume" disabled>续跑</button>
+          <button id="btn-stop" disabled>停止</button>
+          <button id="btn-rescan" disabled>重扫</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">启动迁移</div>
+        <form id="startform" class="form">
+          <div class="grid">
+            <label>源目录<input id="f-src" required placeholder="/mnt/source"></label>
+            <label>目标目录<input id="f-dst" required placeholder="/mnt/destination"></label>
+            <label>并发 Worker 数<input id="f-workers" type="number" min="1" placeholder="自动"></label>
+            <label>忽略片段<input id="f-ignore" placeholder="逗号分隔，可留空"></label>
+          </div>
+          <div class="row">
+            <label class="check"><input id="f-dirs" type="checkbox"> 迁移空目录</label>
+            <label class="check"><input id="f-meta" type="checkbox"> 同步权限/属主</label>
+            <label class="check"><input id="f-del" type="checkbox"> 删除多余条目</label>
+            <label class="check"><input id="f-fresh" type="checkbox"> 全量重跑（清空任务库）</label>
+          </div>
+          <button id="btn-start" class="primary">开始迁移</button>
+        </form>
+        <div id="start-err" class="error"></div>
+      </div>
+    </section>
+
+    <!-- 迁移历史 -->
+    <section id="history" class="view">
+      <div class="card">
+        <div class="card-title">过去的迁移运行
+          <button id="history-refresh" class="ghost">刷新</button>
+        </div>
+        <table id="history-table" class="table">
+          <thead>
+            <tr><th>ID</th><th>开始</th><th>状态</th><th>文件 完成/失败</th><th>字节</th><th>平均速率</th><th>耗时</th><th>来源 → 目标</th></tr>
+          </thead>
+          <tbody><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 任务明细 -->
+    <section id="tasks" class="view">
+      <div class="card">
+        <div class="card-title">任务明细</div>
+        <div class="row">
+          <select id="task-status">
+            <option value="pending">pending</option>
+            <option value="in-progress">in-progress</option>
+            <option value="done">done</option>
+            <option value="failed" selected>failed</option>
+            <option value="all">all</option>
+          </select>
+          <button id="task-refresh" class="ghost">刷新</button>
+        </div>
+        <table id="task-table" class="table">
+          <thead>
+            <tr><th>ID</th><th>类型</th><th>状态</th><th>Worker</th><th>大小</th><th>来源 → 目标</th></tr>
+          </thead>
+          <tbody><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Workers -->
+    <section id="workers" class="view">
+      <div class="card">
+        <div class="card-title">Worker 列表
+          <button id="worker-refresh" class="ghost">刷新</button>
+        </div>
+        <div id="worker-list" class="worker-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="muted">DataNTs · 分布式迁移控制台</footer>
+  <script src="/app.js"></script>
+</body>
+</html>

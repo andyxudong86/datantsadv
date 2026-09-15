@@ -129,6 +129,29 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 > 5. 想从零全量重跑：先 `rm -rf /var/lib/migrate/*` 清空任务库，再重启控制机。
 > 6. 任务库格式会在本次升级（新增 uid/gid 与 META/DELETE 任务）后变化：旧 `snapshot.dat`/`journal.log` 会被识别为不兼容并自动丢弃，**并且意味着全量重跑**。升级后首次启动相当于从零迁移。
 
+### 5.1 Web 控制台（可选）
+
+`da_control` 内嵌一个**无依赖的 Web 控制台**（原生 JS，无需 Node/构建，离线可用）监听在 `http://127.0.0.1:8080`：
+
+- **仪表盘**：实时进度、速率、失败数（SSE 推送）；暂停/续跑/停止/重扫按钮
+- **迁移历史**：每次运行的耗时、文件/字节、平均速率
+- **任务明细**：按状态筛选（默认只看失败，便于排查）
+- **Worker**：在线状态与各 Worker 累计完成量
+
+```sh
+nohup da_control --src /mnt/source --dst /mnt/destination \
+  --listen 0.0.0.0:50051 --state /var/lib/migrate \
+  --http 0.0.0.0:8080 --web-auth admin:change-me &
+```
+
+在生产环境请务必：
+
+- 用 `--web-auth user:pass` 开启 HTTP Basic 认证，否则任何能访问 8080 端口的人都能远程启停迁移；
+- 若控制机出口于公网，别把 8080 直接暴露；用 ssh 隧道 `ssh -L 8080:127.0.0.1:8080 root@<控制机IP>` 或反代加 TLS 更稳妥；
+- 本机用浏览器直接打开 `http://127.0.0.1:8080` 即可，无需安装任何东西。
+
+> 仅从本机访问且机器很安全时可以省略 `--web-auth`（默认监听 `127.0.0.1`，不影响迁移流程）。
+
 ## 主要参数
 
 | 参数             | 默认            | 说明 |
@@ -143,6 +166,8 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 | `--delete-stale`       | `false`   | 删除目标端多余条目（源端已删除的文件/目录；目录删除需配合 `--include-empty-dirs`） |
 | `--ignore`             | -         | 跳过路径片段（可重复） |
 | `--log`                | 自动      | 日志文件（默认 `/var/log/da_<进程>.log`；`--log -` 仅输出到 stderr） |
+| `--http`               | `127.0.0.1:8080` | Web 控制台监听地址（`da_control` 专属；空串关闭控制台） |
+| `--web-auth`           | -         | Web 控制台 HTTP Basic 认证，格式 `user:pass`（`da_control` 专属） |
 
 > **`--sync-meta` / `--delete-stale` 是控制机扫描参数**（`da_migrate` 也有）：它们决定扫描时生成哪些增量任务。
 >
@@ -163,13 +188,15 @@ go test ./... -timeout 180s
 
 ```
 cmd/da_migrate/        单节点 CLI
-cmd/da_control/        控制机 CLI（扫描 + gRPC 调度）
+cmd/da_control/        控制机 CLI（扫描 + gRPC 调度 + 内嵌 Web 控制台）
 cmd/da_worker/         Worker CLI
 internal/clilog/        日志（默认 /var/log/da_*.log，--log 覆盖）
 internal/scanner/     并行目录树遍历
 internal/plan/        增量 diff 与任务生成
 internal/transfer/    worker 池复制
 internal/taskstore/   持久化任务队列（WAL + snapshot）
+internal/webapi/      Web 控制台后端 REST/SSE API
+internal/webui/       内嵌 Web 控制台（SPA + go:embed）
 proto/migrate/v1/     控制面 gRPC 协议
 gen/migrate/v1/       buf 生成代码
 ```
