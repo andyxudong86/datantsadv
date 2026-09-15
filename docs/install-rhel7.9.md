@@ -1,7 +1,9 @@
-# Red Hat Enterprise Linux 7.9 安装部署指南（从 Gitee 下载代码开始）
+﻿# Red Hat Enterprise Linux 7.9 安装部署指南（从 Gitee 下载代码开始）
 
 > 适用：RHEL / CentOS 7.9（x86_64），无 VPN、纯国内网络。
 > 目标：把 DataNTs 部署到 RHEL 7.9 上，完成 NFS/本地目录迁移，支持断点续传与分布式多节点。
+>
+> **部署完成后，用 [verify-rhel7.9.md](verify-rhel7.9.md) 做 10 分钟验收**（单节点、Web 控制台、分布式、失败重试对照清单）。
 
 ---
 

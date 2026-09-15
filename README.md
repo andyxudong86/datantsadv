@@ -1,4 +1,4 @@
-# DataNTs
+﻿# DataNTs
 
 海量小文件迁移工具。解决 NAS / NFS → NFS 迁移中百万级小文件速度过慢的问题（每文件往返延迟 + 系统调用开销）。支持**断点续传 / 增量迁移**，可有**一台控制机 + 多台 Worker** 分布式协同，数据由 Worker 直连共享存储读写，不经过控制机。
 
@@ -30,6 +30,7 @@ go build -o da_migrate ./cmd/da_migrate
 ## 部署到 Red Hat 7.9
 
 > **从 Gitee 下载代码开始的完整逐步安装文档见 [docs/install-rhel7.9.md](docs/install-rhel7.9.md)**（含 RHEL 7.9 上装 Go、离线安装、systemd、分布式、故障排查）。
+> **部署完成后的验收/冒烟说明见 [docs/verify-rhel7.9.md](docs/verify-rhel7.9.md)**（10 分钟自动体检 + Web 控制台/分布式/失败重试验证清单）。
 
 RHEL 7.9 自带 Go 太旧（约 1.18）且 glibc 过老（2.17），**不要在目标机上编译**。在一台新机器（或任何装有 Go 1.25+ 的机器）上**静态交叉编译**出二进制，拷到 RHEL 7.9 直接运行，无需安装任何依赖。剩余的 1-6 步见下述文档与下方简版。
 
