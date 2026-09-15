@@ -65,6 +65,10 @@ const (
 	Done
 	// Failed tasks errored and were skipped.
 	Failed
+
+	// AnyStatus is a sentinel filter matching tasks in every status. It never
+	// appears in the store itself.
+	AnyStatus Status = 255
 )
 
 func (s Status) String() string {
@@ -335,6 +339,46 @@ func (s *Store) Get(id string) (Task, Status, bool) {
 		return Task{}, 0, false
 	}
 	return r.t, r.status, true
+}
+
+// TaskItem is a task together with its current lifecycle state and the worker
+// (if any) that owns it. It is the unit returned by paginated queries.
+type TaskItem struct {
+	Task
+	Status Status
+	Owner  string
+}
+
+// Query returns up to limit tasks matching status (AnyStatus matches every
+// status), ordered by task ID, skipping the first offset matches. total is the
+// number of matches before pagination. A non-positive limit defaults to 100.
+func (s *Store) Query(status Status, offset, limit int) ([]TaskItem, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	items := make([]TaskItem, 0, 64)
+	for _, r := range s.tasks {
+		if status != AnyStatus && r.status != status {
+			continue
+		}
+		items = append(items, TaskItem{Task: r.t, Status: r.status, Owner: r.owner})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	total := len(items)
+	if len(items) > offset {
+		items = items[offset:]
+	} else {
+		items = nil
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, total
 }
 
 // Done flushes state and closes the store.

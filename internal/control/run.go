@@ -64,6 +64,9 @@ type RunSummary struct {
 // Fields are guarded by Controller.mu.
 type activeRun struct {
 	id          string
+	src         string
+	dst         string
+	cfg         RunConfig
 	startedAt   time.Time
 	filesDone   int64
 	filesFailed int64
@@ -96,7 +99,7 @@ func (c *Controller) StartRun(src, dst string, cfg RunConfig) (string, error) {
 			return "", err
 		}
 	}
-	run := &activeRun{startedAt: time.Now()}
+	run := &activeRun{startedAt: time.Now(), src: src, dst: dst, cfg: cfg}
 	if c.cfg.History != nil {
 		h := &history.Run{
 			Src: src,
@@ -173,6 +176,22 @@ func (c *Controller) RunState() RunState {
 	return c.runState
 }
 
+// Runs returns the recorded history of past migration runs, most recent first.
+func (c *Controller) Runs() []*history.Run {
+	if c.cfg.History == nil {
+		return nil
+	}
+	return c.cfg.History.List()
+}
+
+// Run returns the recorded run with the given id, if any.
+func (c *Controller) Run(id string) (*history.Run, bool) {
+	if c.cfg.History == nil {
+		return nil, false
+	}
+	return c.cfg.History.Get(id)
+}
+
 // CurrentRun returns a snapshot of the active run, if any.
 func (c *Controller) CurrentRun() (RunSummary, bool) {
 	c.mu.Lock()
@@ -190,6 +209,29 @@ func (c *Controller) CurrentRun() (RunSummary, bool) {
 		ScannedTasks: c.active.scanned,
 		ScanDone:     c.active.scanDone,
 	}, true
+}
+
+// ReScan re-runs the incremental scan+ingest of the active run, re-enqueueing
+// changed files since the first scan. It is a no-op error when no run is
+// active, and is skipped while a previous scan is still running.
+func (c *Controller) ReScan() error {
+	c.mu.Lock()
+	if c.active == nil {
+		c.mu.Unlock()
+		return errors.New("control: no active run to rescan")
+	}
+	if !c.active.scanDone {
+		c.mu.Unlock()
+		return errors.New("control: a scan is already in progress")
+	}
+	run := c.active
+	src, dst, cfg := run.src, run.dst, run.cfg
+	run.scanDone = false
+	c.mu.Unlock()
+
+	c.logf("run %s rescanning %s -> %s", run.id, src, dst)
+	go c.runScan(run, src, dst, cfg)
+	return nil
 }
 
 // runScan performs the background scan+ingest for a started run.

@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -43,6 +44,45 @@ type Config struct {
 	// History, if set, records each migration run (status + summary) for the
 	// web UI and for post-hoc inspection of past migrations.
 	History *history.Store
+	// WorkerTimeout is how long without a heartbeat a worker is considered
+	// disconnected. Default 60s.
+	WorkerTimeout time.Duration
+}
+
+// workerState is the Controller's per-worker bookkeeping, guarded by mu.
+type workerState struct {
+	id          string
+	address     string
+	capacity    int
+	joined      time.Time
+	lastSeen    time.Time
+	filesDone   int64
+	filesFailed int64
+	bytesDone   int64
+}
+
+// WorkerInfo is a public snapshot of a worker's liveness and cumulative
+// counters, for the web layer.
+type WorkerInfo struct {
+	ID          string
+	Address     string
+	Capacity    int
+	Joined      time.Time
+	LastSeen    time.Time
+	Connected   bool
+	FilesDone   int64
+	FilesFailed int64
+	BytesDone   int64
+}
+
+// ServerState is a composite snapshot of the controller for the web layer,
+// gathered in one lock hold.
+type ServerState struct {
+	RunState RunState
+	Run      *RunSummary
+	Stats    taskstore.Stats
+	Workers  []WorkerInfo
+	Now      time.Time
 }
 
 // Controller is the orchestrator. It is safe for concurrent use.
@@ -54,8 +94,8 @@ type Controller struct {
 	logger *log.Logger
 	mu     sync.Mutex
 	nextID int
-	// workers tracks liveness: id -> last heartbeat time.
-	workers map[string]time.Time
+	// workers tracks per-worker bookkeeping keyed by id.
+	workers map[string]*workerState
 	// runState gates task claims (see RunState). Guarded by mu.
 	runState RunState
 	// active tracks the single run currently in flight. Guarded by mu.
@@ -78,12 +118,15 @@ func NewController(store *taskstore.Store, cfg Config) *Controller {
 	if cfg.ProgressInterval <= 0 {
 		cfg.ProgressInterval = 10 * time.Second
 	}
+	if cfg.WorkerTimeout <= 0 {
+		cfg.WorkerTimeout = 60 * time.Second
+	}
 	return &Controller{
 		store:    store,
 		cfg:      cfg,
 		logger:   cfg.Logger,
 		nextID:   1,
-		workers:  map[string]time.Time{},
+		workers:  map[string]*workerState{},
 		runState: RunRunning, // legacy direct-ingest flow grants claims by default
 		quit:     make(chan struct{}),
 	}
@@ -162,8 +205,21 @@ func (c *Controller) Register(ctx context.Context, req *migratev1.RegisterReques
 		c.nextID++
 		c.mu.Unlock()
 	}
+	now := time.Now()
 	c.mu.Lock()
-	c.workers[id] = time.Now()
+	if w, ok := c.workers[id]; ok {
+		w.address = req.GetAddress()
+		w.capacity = int(req.GetCapacity())
+		w.lastSeen = now
+	} else {
+		c.workers[id] = &workerState{
+			id:       id,
+			address:  req.GetAddress(),
+			capacity: int(req.GetCapacity()),
+			joined:   now,
+			lastSeen: now,
+		}
+	}
 	c.mu.Unlock()
 	return &migratev1.RegisterResponse{WorkerId: id}, nil
 }
@@ -210,10 +266,20 @@ func (c *Controller) Report(ctx context.Context, req *migratev1.ReportRequest) (
 		c.logger.Printf("report: worker=%s ok=%d failed=%d (e.g. %q)", req.GetWorkerId(), len(okIDs), len(failIDs), firstErrs)
 	}
 
-	// Account the payload into the active run (bytes/files). Fails on the run
-	// are double-counted in store.Fail below, but the run summary only cares
-	// about this run's outcome totals.
+	// Account the payload into the active run (bytes/files) and the owning
+	// worker's counters. Fails on the run are double-counted in store.Fail
+	// below, but the run summary only cares about this run's outcome totals.
 	c.mu.Lock()
+	if w, ok := c.workers[req.GetWorkerId()]; ok {
+		w.lastSeen = time.Now()
+		w.filesDone += int64(len(okIDs))
+		w.filesFailed += int64(len(failIDs))
+		for _, res := range req.GetResults() {
+			if res.GetOk() {
+				w.bytesDone += res.GetBytes()
+			}
+		}
+	}
 	if r := c.active; r != nil {
 		r.filesDone += int64(len(okIDs))
 		r.filesFailed += int64(len(failIDs))
@@ -243,13 +309,82 @@ func (c *Controller) Report(ctx context.Context, req *migratev1.ReportRequest) (
 // Heartbeat implements migratev1.ControlServer.
 func (c *Controller) Heartbeat(ctx context.Context, req *migratev1.HeartbeatRequest) (*migratev1.HeartbeatResponse, error) {
 	c.mu.Lock()
-	c.workers[req.GetWorkerId()] = time.Now()
+	if w, ok := c.workers[req.GetWorkerId()]; ok {
+		w.lastSeen = time.Now()
+	}
 	c.mu.Unlock()
 	return &migratev1.HeartbeatResponse{Ok: true}, nil
 }
 
 // Stats returns the store's current task distribution.
 func (c *Controller) Stats() taskstore.Stats { return c.store.Stats() }
+
+// QueryTasks returns a paginated view of the task store (see
+// taskstore.Store.Query).
+func (c *Controller) QueryTasks(status taskstore.Status, offset, limit int) ([]taskstore.TaskItem, int) {
+	return c.store.Query(status, offset, limit)
+}
+
+// Workers returns a snapshot of every registered worker, ordered by id.
+func (c *Controller) Workers() []WorkerInfo {
+	c.mu.Lock()
+	now := time.Now()
+	out := make([]WorkerInfo, 0, len(c.workers))
+	for _, w := range c.workers {
+		out = append(out, WorkerInfo{
+			ID:          w.id,
+			Address:     w.address,
+			Capacity:    w.capacity,
+			Joined:      w.joined,
+			LastSeen:    w.lastSeen,
+			Connected:   now.Sub(w.lastSeen) <= c.cfg.WorkerTimeout,
+			FilesDone:   w.filesDone,
+			FilesFailed: w.filesFailed,
+			BytesDone:   w.bytesDone,
+		})
+	}
+	c.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// State returns a composite snapshot of the controller in a single lock hold.
+func (c *Controller) State() ServerState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := ServerState{
+		RunState: c.runState,
+		Stats:    c.store.Stats(),
+		Now:      time.Now(),
+	}
+	if r := c.active; r != nil {
+		st.Run = &RunSummary{
+			ID:           r.id,
+			StartedAt:    r.startedAt,
+			FilesDone:    r.filesDone,
+			FilesFailed:  r.filesFailed,
+			BytesDone:    r.bytesDone,
+			BytesFailed:  r.bytesFailed,
+			ScannedTasks: r.scanned,
+			ScanDone:     r.scanDone,
+		}
+	}
+	for _, w := range c.workers {
+		st.Workers = append(st.Workers, WorkerInfo{
+			ID:          w.id,
+			Address:     w.address,
+			Capacity:    w.capacity,
+			Joined:      w.joined,
+			LastSeen:    w.lastSeen,
+			Connected:   st.Now.Sub(w.lastSeen) <= c.cfg.WorkerTimeout,
+			FilesDone:   w.filesDone,
+			FilesFailed: w.filesFailed,
+			BytesDone:   w.bytesDone,
+		})
+	}
+	sort.Slice(st.Workers, func(i, j int) bool { return st.Workers[i].ID < st.Workers[j].ID })
+	return st
+}
 
 // logf logs through the controller's logger when one is configured.
 func (c *Controller) logf(format string, args ...interface{}) {

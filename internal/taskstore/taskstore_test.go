@@ -219,6 +219,63 @@ func TestSnapshotCompaction(t *testing.T) {
 	}
 }
 
+func TestQuery(t *testing.T) {
+	s := mustNew(t)
+	ts := mkTasks(5)
+	if err := s.Ingest(ts); err != nil {
+		t.Fatal(err)
+	}
+	claimed, _ := s.Claim("w1", 2)
+	var inProgress, done []string
+	for i, tk := range claimed {
+		if i == 0 {
+			inProgress = append(inProgress, tk.ID)
+		} else {
+			done = append(done, tk.ID)
+		}
+	}
+	_ = s.Complete(done)
+
+	// status filter
+	items, total := s.Query(Pending, 0, 0)
+	if total != 3 || len(items) != 3 {
+		t.Fatalf("pending: total=%d items=%d, want 3/3", total, len(items))
+	}
+	for _, it := range items {
+		if it.Status != Pending || it.Owner != "" {
+			t.Fatalf("unexpected pending item %+v", it)
+		}
+	}
+	items, total = s.Query(InProgress, 0, 0)
+	if total != 1 || len(items) != 1 || items[0].ID != inProgress[0] || items[0].Owner != "w1" {
+		t.Fatalf("in-progress: total=%d items=%v", total, items)
+	}
+	if _, total = s.Query(AnyStatus, 0, 0); total != 5 {
+		t.Fatalf("any total=%d, want 5", total)
+	}
+
+	// ordering by id
+	items, _ = s.Query(AnyStatus, 0, 100)
+	for i := 1; i < len(items); i++ {
+		if items[i-1].ID >= items[i].ID {
+			t.Fatalf("not sorted by id: %v", items)
+		}
+	}
+
+	// pagination: offset skips, limit caps
+	items, total = s.Query(AnyStatus, 2, 2)
+	if total != 5 || len(items) != 2 {
+		t.Fatalf("page: total=%d items=%d, want 5/2", total, len(items))
+	}
+	full, _ := s.Query(AnyStatus, 0, 100)
+	if items[0].ID != full[2].ID || items[1].ID != full[3].ID {
+		t.Fatalf("offset page misaligned: %v vs %v", items, full)
+	}
+	if got, _ := s.Query(AnyStatus, 10, 10); got != nil {
+		t.Fatalf("offset beyond range should be empty, got %v", got)
+	}
+}
+
 func TestReset(t *testing.T) {
 	s := mustNew(t)
 	if err := s.Ingest(mkTasks(5)); err != nil {
