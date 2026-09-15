@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package migrate.v1;
+
+option go_package = "datants/gen/migrate/v1;migratev1";
+
+// Control-plane protocol between a single Controller (orchestrator) and many
+// Worker migration processes. Data plane (file bytes) flows directly between
+// each Worker and the shared source/destination storage; it never passes
+// through the Controller.
+
+// Task is a single, indivisible unit of migration work dispatched to a Worker.
+message Task {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_COPY = 1; // copy one file's content from src_path to dst_path
+    KIND_MKDIR = 2; // ensure dst_path directory exists (empty dirs)
+    KIND_META = 3; // apply mode/owner metadata to an existing dst_path entry
+    KIND_DELETE = 4; // remove dst_path (file or tree) absent from the source
+  }
+  // id is a stable, content-independent key (e.g. sha256 of the source path).
+  string id = 1;
+  Kind kind = 2;
+  string src_path = 4;
+  string dst_path = 5;
+  int64 size = 6;
+  int64 mod_time = 7;
+  uint32 mode = 8;
+  uint32 uid = 9;
+  uint32 gid = 10;
+}
+
+message RegisterRequest {
+  string worker_id = 1; // unique across the fleet
+  string address = 2; // human-readable address for logs
+  int32 capacity = 3; // how many concurrent copies this worker can run
+}
+
+message RegisterResponse {
+  string worker_id = 1; // the id the worker should use (may be assigned)
+}
+
+message ClaimRequest {
+  string worker_id = 1;
+  int32 batch_size = 2; // how many tasks this worker wants (<= 0: server default)
+}
+
+message ClaimResponse {
+  repeated Task tasks = 1;
+}
+
+message Result {
+  string task_id = 1;
+  bool ok = 2;
+  string error = 3;
+  int64 bytes = 4; // bytes written for a COPY task
+}
+
+message ReportRequest {
+  string worker_id = 1;
+  repeated Result results = 2;
+}
+
+message ReportResponse {}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  int64 bytes_per_sec = 2;
+  int64 files_done = 3;
+  int64 errors = 4;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+}
+
+service Control {
+  // Register announces the worker to the controller and gets back its id.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  // Claim lets a worker pull its next batch of tasks (work-stealing / pull model).
+  rpc Claim(ClaimRequest) returns (ClaimResponse);
+  // Report returns results for previously claimed tasks.
+  rpc Report(ReportRequest) returns (ReportResponse);
+  // Heartbeat carries liveness + progress/throughput telemetry.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}

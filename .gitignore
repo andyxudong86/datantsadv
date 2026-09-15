@@ -1,0 +1,16 @@
+# build artifacts
+/da_migrate
+/da_migrate.exe
+/da_control
+/da_control.exe
+/da_worker
+/da_worker.exe
+*.exe
+*.log
+# office lock files
+~$*
+# presentations
+*.pptx
+# test data
+/sourcetest/
+/targettest/
