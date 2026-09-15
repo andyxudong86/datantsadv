@@ -35,6 +35,14 @@ RHEL 7.9 自带 Go 太旧（约 1.18）且 glibc 过老（2.17），**不要在�
 
 ### 1. 编译机（Windows / Linux 均可）
 
+用仓库自带脚本一键产出 RHEL 7.9 静态产物到 `dist/rhel7/`（含 `go version -m` 自检）：
+
+```sh
+sh scripts/build-rhel7.sh
+```
+
+或按下面命令手动编译：
+
 ```sh
 # Windows PowerShell:
 $env:GOOS="linux"; $env:GOARCH="amd64"; $env:CGO_ENABLED="0"
@@ -184,6 +192,11 @@ go vet ./...
 go test ./... -timeout 180s
 ```
 
+除常规单元测试外，`internal/e2e` 还包含两组真实验证：
+
+- **端到端冒烟**：临时编译本机版 `da_control`/`da_worker`，起真实进程做一次完整迁移（含空目录、删多余文件、Web 控制台、SSE、历史），校验落盘文件与任务清单；
+- **RHEL 7.9 产物校验**：交叉编译三个 linux/amd64 静态二进制，用 `go version -m` 断言 `GOOS=linux`/`GOARCH=amd64`/`CGO_ENABLED=0`，防止产物悄悄退化为动态链接。
+
 ## 目录结构
 
 ```
@@ -197,6 +210,8 @@ internal/transfer/    worker 池复制
 internal/taskstore/   持久化任务队列（WAL + snapshot）
 internal/webapi/      Web 控制台后端 REST/SSE API
 internal/webui/       内嵌 Web 控制台（SPA + go:embed）
+internal/e2e/         端到端冒烟 + 交叉编译产物校验
+scripts/              构建脚本（scripts/build-rhel7.sh）
 proto/migrate/v1/     控制面 gRPC 协议
 gen/migrate/v1/       buf 生成代码
 ```

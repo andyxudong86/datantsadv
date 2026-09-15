@@ -7,6 +7,7 @@
 /da_worker.exe
 *.exe
 *.log
+/dist/
 # office lock files
 ~$*
 # presentations
