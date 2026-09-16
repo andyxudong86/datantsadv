@@ -9,7 +9,7 @@
 - 临时文件 + 原子重命名：崩溃不会留下半写文件
 - 带宽限流、有界内存，支撑千万级文件
 - 分布式：控制机扫描 + gRPC 调度，Worker 主动拉取任务，失败自动重派
-- 按 IP 圈定参与迁移的 Worker：启动任务时指定允许的 Worker IP 列表，名单外 Worker 领不到任何任务
+- 按 IP 圈定参与迁移的 Worker：Worker 页把节点保存进 Worker 池（池外 Worker 领不到任何任务）；池内且已连线的节点显示"准备接收任务"
 
 ## 构建
 
@@ -151,15 +151,14 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 `da_control` 支持两种启动方式，推荐第 ① 种：
 
 **① 待命模式（推荐，GUI 全程控制）**——不带 `--src/--dst`，控制机只起 gRPC + Web，
-迁移由控制台"启动迁移"表单（或 `POST /api/start`）发起，源/目标、并发、忽略列表等都在界面上填。表单"**仅允许的 Worker IP**"可把任务派发限定到指定的几台 Worker（逗号分隔多台；留空表示所有已上线 Worker 都能领任务）。待命模式（不带 `--src/--dst`）重启后**不会**自动重跑上一轮任务——残余任务库会保持冻结，直到你在界面上新发起一次迁移：
+Worker 池与任务都在控制台配置。"**Worker 页**"是配置 Worker 的唯一入口：每行一个节点（`IP 并发 批次`，如 `10.0.0.7 8 64`）保存为 Worker 池，只有池内且已连线的节点会进入"**准备接收任务**"状态；点"本机启动 Worker"拉起本机 worker 时自动把 `127.0.0.1` 加入池使其就绪（无需再 ssh 上去跑 da_worker）；其它机器先按命令行启动 da_worker 并把自己的 IP 加入池即可。"启动迁移"表单只填源/目标与迁移选项——任务只会派发给池中"准备接收任务"的节点，未保存池时派发给所有在线 Worker。待命模式（不带 `--src/--dst`）重启后**不会**自动重跑上一轮任务——残余任务库会保持冻结，直到你在界面上新发起一次迁移：
 
 ```sh
 nohup da_control \
   --state /var/lib/migrate --listen 0.0.0.0:50051 \
   --http 0.0.0.0:8080 --web-auth admin:change-me \
   --worker-bin /usr/local/datants/da_worker &
-# 浏览器打开 http://<IP>:8080 → 填源/目标目录 → 点"开始迁移"
-# Worker 页可"本机启动 Worker"（台数/并发/批次）并在迁移前提前拉起，无需再 ssh 上去跑 da_worker
+# 浏览器打开 http://<IP>:8080 → Worker 页配置/启动 Worker 池 → 仪表盘填源/目标 → 点"开始迁移"
 ```
 
 > 控制机上的 worker 由控制进程拉起后**常驻空闲轮询**（`--idle-poll`），可在"开始迁移"之前先启动；Worker 页可随时"停止"。

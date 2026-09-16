@@ -93,6 +93,12 @@ func (c *Controller) StartRun(src, dst string, cfg RunConfig) (string, error) {
 		cfg.Workers = runtime.GOMAXPROCS(0)
 	}
 
+	// Absent an explicit per-run allowlist, restrict claims to the worker pool
+	// declared on the Workers page (empty pool = any online worker).
+	if len(cfg.WorkerIPs) == 0 {
+		cfg.WorkerIPs = c.poolIPs()
+	}
+
 	c.mu.Lock()
 	if c.active != nil {
 		c.mu.Unlock()

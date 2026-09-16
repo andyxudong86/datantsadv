@@ -105,6 +105,7 @@ func main() {
 		DefaultBatch:    *batch,
 		Logger:          logger,
 		History:         hist,
+		WorkerPoolFile:  filepath.Join(*state, "workerpool.json"),
 	})
 
 	if autoStart {

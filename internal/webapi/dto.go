@@ -80,6 +80,8 @@ type workerDTO struct {
 	Address     string    `json:"address"`
 	Capacity    int       `json:"capacity"`
 	Connected   bool      `json:"connected"`
+	InPool      bool      `json:"in_pool"`
+	Ready       bool      `json:"ready"`
 	Joined      time.Time `json:"joined_at"`
 	LastSeen    time.Time `json:"last_seen"`
 	FilesDone   int64     `json:"files_done"`
@@ -87,19 +89,40 @@ type workerDTO struct {
 	BytesDone   int64     `json:"bytes_done"`
 }
 
-func toWorkerDTO(w control.WorkerInfo) workerDTO {
+func toWorkerDTO(w control.WorkerInfo, poolIPs map[string]bool) workerDTO {
+	_, inPool := poolIPs[w.IP]
 	return workerDTO{
 		ID:          w.ID,
 		IP:          w.IP,
 		Address:     w.Address,
 		Capacity:    w.Capacity,
 		Connected:   w.Connected,
+		InPool:      inPool,
+		Ready:       w.Connected && inPool,
 		Joined:      w.Joined,
 		LastSeen:    w.LastSeen,
 		FilesDone:   w.FilesDone,
 		FilesFailed: w.FilesFailed,
 		BytesDone:   w.BytesDone,
 	}
+}
+
+// workerPoolDTO is one declared pool entry for the Workers page.
+type workerPoolDTO struct {
+	ID       string `json:"id,omitempty"`
+	IP       string `json:"ip,omitempty"`
+	Local    bool   `json:"local,omitempty"`
+	Count    int    `json:"count,omitempty"`
+	Capacity int    `json:"capacity,omitempty"`
+	Batch    int    `json:"batch,omitempty"`
+}
+
+func toWorkerPoolDTO(e control.WorkerPoolEntry) workerPoolDTO {
+	return workerPoolDTO{ID: e.ID, IP: e.IP, Local: e.Local, Count: e.Count, Capacity: e.Capacity, Batch: e.Batch}
+}
+
+func fromWorkerPoolDTO(e workerPoolDTO) control.WorkerPoolEntry {
+	return control.WorkerPoolEntry{ID: e.ID, IP: e.IP, Local: e.Local, Count: e.Count, Capacity: e.Capacity, Batch: e.Batch}
 }
 
 func toWorkerBriefDTO(w control.WorkerInfo) workerBriefDTO {

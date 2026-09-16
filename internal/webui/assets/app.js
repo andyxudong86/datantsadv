@@ -149,17 +149,14 @@
   $("#startform").addEventListener("submit", function (e) {
     e.preventDefault();
     var ignore = $("#f-ignore").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-    var workerIPs = $("#f-worker-ips").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
     var body = {
       src: $("#f-src").value.trim(),
       dst: $("#f-dst").value.trim(),
-      workers: parseInt($("#f-workers").value, 10) || 0,
       include_dirs: $("#f-dirs").checked,
       sync_meta: $("#f-meta").checked,
       delete_stale: $("#f-del").checked,
       fresh: $("#f-fresh").checked,
-      ignore: ignore,
-      worker_ips: workerIPs
+      ignore: ignore
     };
     if (!body.src || !body.dst) { $("#start-err").textContent = "请填写源目录和目标目录。"; return; }
     $("#btn-start").disabled = true;
@@ -223,6 +220,8 @@
   $("#task-refresh").click();
 
   // ---- Workers ----
+  var lastWorkers = { workers: [], pool: [] };
+
   function renderSpawned(sp) {
     var box = $("#spawn-list");
     if (!sp || !sp.length) { box.innerHTML = '<div class="muted">没有由控制机拉起的 Worker。</div>'; return; }
@@ -236,15 +235,43 @@
     }).join("");
   }
 
+  function badges() {
+    var states = { running: "在线", idle: "离线" };
+    return {
+      ready: function () { return badge("running", "准备接收任务"); },
+      online: function (label) { return badge("running", label || "在线"); },
+      offline: function () { return badge("idle", "离线"); }
+    };
+  }
+
+  function renderPool(pool) {
+    var tb = $("#pool-table tbody");
+    if (!pool || !pool.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">未配置 — 迁移会派发给全部在线 Worker。</td></tr>'; return; }
+    tb.innerHTML = pool.map(function (p) {
+      return "<tr>" +
+        "<td>" + esc(p.id || "—") + "</td>" +
+        "<td>" + esc(p.ip || "—") + "</td>" +
+        "<td>" + (p.capacity || "—") + "</td>" +
+        "<td>" + (p.batch || "—") + "</td>" +
+        "</tr>";
+    }).join("");
+  }
+
   function loadWorkers() {
     api("/api/workers").then(function (data) {
+      lastWorkers = data;
       var ws = data.workers || [];
+      var pool = data.pool || [];
+      renderPool(pool);
       var box = $("#worker-list");
-      if (!ws.length) { box.innerHTML = '<div class="muted">还没有 Worker 注册。</div>'; return; }
+      if (!ws.length) { box.innerHTML = '<div class="muted">还没有 Worker 注册。</div>'; renderSpawned(data.spawned); return; }
       box.innerHTML = ws.map(function (w) {
-        var cls = w.connected ? "running" : "idle";
+        var b;
+        if (!w.connected) b = badges().offline();
+        else if (w.in_pool) b = badges().ready();
+        else b = badges().online("在线 · 未入池");
         return '<div class="worker-card">' +
-          '<div class="w-id">' + esc(w.id) + " " + badge(cls, w.connected ? "在线" : "离线") + "</div>" +
+          '<div class="w-id">' + esc(w.id) + " " + b + "</div>" +
           '<div class="w-meta">IP ' + esc(w.ip || "—") + " · 并发 " + (w.capacity || "—") + "</div>" +
           '<div class="w-meta">地址 ' + esc(w.address || "—") + "</div>" +
           '<div class="w-meta">已完成 ' + w.files_done + " 文件 / " + fmtBytes(w.bytes_done) + " · 失败 " + w.files_failed + "</div>" +
@@ -259,6 +286,63 @@
   $("#worker-refresh").addEventListener("click", loadWorkers);
   $("#worker-refresh").click();
 
+  // Worker 池：保存 / 从在线节点填充
+  function parsePoolText() {
+    return $("#pool-ips").value.split("\n").map(function (line) {
+      var toks = line.trim().split(/\s+/).filter(Boolean);
+      if (!toks.length || toks[0].charAt(0) === "#") return null;
+      return {
+        ip: toks[0],
+        capacity: parseInt(toks[1], 10) || 0,
+        batch: parseInt(toks[2], 10) || 0,
+        local: toks[0] === "127.0.0.1" || toks[0] === "::1"
+      };
+    }).filter(Boolean);
+  }
+
+  $("#poolform").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var workers = parsePoolText();
+    if (!workers.length) { $("#pool-msg").textContent = "请至少填写一行 IP。"; return; }
+    $("#pool-save").disabled = true;
+    $("#pool-msg").textContent = "";
+    var entry = { workers: workers };
+    api("/api/workers/pool", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry)
+    }).then(function () {
+      $("#pool-save").disabled = false;
+      $("#pool-msg").textContent = "已保存 Worker 池（" + workers.length + " 个节点）。";
+      loadWorkers();
+    }).catch(function (err) {
+      $("#pool-save").disabled = false;
+      $("#pool-msg").textContent = err.message;
+    });
+  });
+
+  $("#pool-fill").addEventListener("click", function () {
+    var lines = (lastWorkers.workers || []).filter(function (w) { return w.connected; }).map(function (w) {
+      return w.ip + (w.capacity ? " " + w.capacity : "");
+    });
+    var merged = mergeLines($("#pool-ips").value, lines);
+    $("#pool-ips").value = merged.length ? merged.join("\n") : $("#pool-ips").value;
+    $("#pool-msg").textContent = "";
+  });
+
+  function mergeLines(current, add) {
+    var seen = {};
+    var out = [];
+    current.split("\n").forEach(function (l) {
+      var t = l.trim();
+      var ip = t.split(/\s+/)[0] || "";
+      if (t && !seen[ip]) { seen[ip] = true; if (ip) out.push(t); }
+    });
+    add.forEach(function (l) {
+      var ip = l.split(/\s+/)[0] || "";
+      if (ip && !seen[ip]) { seen[ip] = true; out.push(l); }
+    });
+    return out;
+  }
+
   // 本机启动 / 停止 Worker
   $("#spawnform").addEventListener("submit", function (e) {
     e.preventDefault();
@@ -272,8 +356,20 @@
     $("#spawn-err").textContent = "";
     api("/api/workers/spawn", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
-    }).then(function () { $("#sp-start").disabled = false; loadWorkers(); })
-      .catch(function (err) { $("#sp-start").disabled = false; $("#spawn-err").textContent = err.message; });
+    }).then(function () {
+      // 本机 Worker 启动即视为"准备接收任务"：确保 127.0.0.1 在池中
+      var pool = (lastWorkers.pool || []).filter(function (p) { return p.ip !== "127.0.0.1" && p.ip !== "::1"; });
+      pool.push({ ip: "127.0.0.1", local: true, count: body.count, capacity: body.capacity, batch: body.batch });
+      return api("/api/workers/pool", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workers: pool })
+      });
+    }).then(function () {
+      $("#sp-start").disabled = false;
+      loadWorkers();
+    }).catch(function (err) {
+      $("#sp-start").disabled = false;
+      $("#spawn-err").textContent = err.message;
+    });
   });
 
   document.addEventListener("click", function (e) {

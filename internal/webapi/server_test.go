@@ -21,6 +21,7 @@ type fake struct {
 	state   control.ServerState
 	runs    []*history.Run
 	workers []control.WorkerInfo
+	pool    []control.WorkerPoolEntry
 	tasks   []taskstore.TaskItem
 	total   int
 
@@ -75,7 +76,16 @@ func newFake() *fake {
 func (f *fake) State() control.ServerState    { return f.state }
 func (f *fake) RunState() control.RunState    { return f.state.RunState }
 func (f *fake) Workers() []control.WorkerInfo { return f.workers }
-func (f *fake) Runs() []*history.Run          { return f.runs }
+func (f *fake) WorkerPool() []control.WorkerPoolEntry {
+	out := make([]control.WorkerPoolEntry, len(f.pool))
+	copy(out, f.pool)
+	return out
+}
+func (f *fake) SetWorkerPool(pool []control.WorkerPoolEntry) error {
+	f.pool = append([]control.WorkerPoolEntry(nil), pool...)
+	return nil
+}
+func (f *fake) Runs() []*history.Run { return f.runs }
 func (f *fake) Run(id string) (*history.Run, bool) {
 	for _, r := range f.runs {
 		if r.ID == id {
@@ -170,6 +180,56 @@ func TestWorkersEndpoint(t *testing.T) {
 	}
 	if w["ip"] != "10.0.0.1" {
 		t.Fatalf("worker ip = %v", w["ip"])
+	}
+	// Without a pool the connected worker is online but not ready.
+	if w["in_pool"] != false || w["ready"] != false {
+		t.Fatalf("worker pool flags = %v", w)
+	}
+	if pool, ok := out["pool"].([]any); !ok || len(pool) != 0 {
+		t.Fatalf("default pool = %v", out["pool"])
+	}
+
+	// A declared pool marks its members ready while they stay connected.
+	f := newFake()
+	f.pool = []control.WorkerPoolEntry{{ID: "node-a", IP: "10.0.0.1", Capacity: 8}}
+	srv = webapi.NewServer(f)
+	rr = do(t, srv.Handler(), "GET", "/api/workers", "")
+	w = decode[map[string]any](t, rr)["workers"].([]any)[0].(map[string]any)
+	if w["in_pool"] != true || w["ready"] != true {
+		t.Fatalf("pooled worker flags = %v", w)
+	}
+	pool := decode[map[string]any](t, rr)["pool"].([]any)
+	if len(pool) != 1 || pool[0].(map[string]any)["ip"] != "10.0.0.1" {
+		t.Fatalf("pool = %v", pool)
+	}
+}
+
+func TestWorkerPoolEndpoint(t *testing.T) {
+	f := newFake()
+	srv := webapi.NewServer(f)
+
+	body := `{"workers":[
+		{"id":"node-a","ip":"10.0.0.1","capacity":8,"batch":64},
+		{"id":"node-b","ip":"[::ffff:192.168.0.9]","local":true,"count":2,"capacity":4}
+	]}`
+	rr := do(t, srv.Handler(), "POST", "/api/workers/pool", body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set pool code = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(f.pool) != 2 {
+		t.Fatalf("stored pool = %+v", f.pool)
+	}
+	if f.pool[1].IP != "192.168.0.9" {
+		t.Fatalf("normalized ip = %q", f.pool[1].IP)
+	}
+
+	// entries without an IP are rejected
+	rr = do(t, srv.Handler(), "POST", "/api/workers/pool", `{"workers":[{"id":"x"}]}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing ip code = %d", rr.Code)
+	}
+	if len(f.pool) != 2 {
+		t.Fatalf("rejected request still mutated pool: %+v", f.pool)
 	}
 }
 

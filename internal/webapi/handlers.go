@@ -85,15 +85,58 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	ws := s.ctl.Workers()
+	// Build the membership map keyed by normalized IP once per call.
+	pool := s.ctl.WorkerPool()
+	poolIPs := make(map[string]bool, len(pool))
+	for _, e := range pool {
+		if ip := control.NormalizeIP(e.IP); ip != "" {
+			poolIPs[ip] = true
+		}
+	}
 	out := make([]workerDTO, 0, len(ws))
 	for _, w := range ws {
-		out = append(out, toWorkerDTO(w))
+		out = append(out, toWorkerDTO(w, poolIPs))
 	}
-	resp := map[string]any{"workers": out}
+	poolOut := make([]workerPoolDTO, 0, len(pool))
+	for _, e := range pool {
+		poolOut = append(poolOut, toWorkerPoolDTO(e))
+	}
+	resp := map[string]any{
+		"workers": out,
+		"pool":    poolOut,
+	}
 	if s.spawner != nil {
 		resp["spawned"] = s.spawner.Snapshot()
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// setWorkerPoolRequestDTO is the JSON body of POST /api/workers/pool.
+type setWorkerPoolRequestDTO struct {
+	Workers []workerPoolDTO `json:"workers"`
+}
+
+func (s *Server) handleSetWorkerPool(w http.ResponseWriter, r *http.Request) {
+	var req setWorkerPoolRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	entries := make([]control.WorkerPoolEntry, 0, len(req.Workers))
+	for _, e := range req.Workers {
+		e.IP = control.NormalizeIP(e.IP)
+		if e.IP == "" {
+			writeErr(w, http.StatusBadRequest, "every pool entry needs a non-empty ip")
+			return
+		}
+		entries = append(entries, fromWorkerPoolDTO(e))
+	}
+	if err := s.ctl.SetWorkerPool(entries); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.logf("set worker pool: %d nodes", len(entries))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // spawnLimits bound how many workers a single console command may launch.

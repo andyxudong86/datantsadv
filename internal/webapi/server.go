@@ -31,6 +31,8 @@ type ControlService interface {
 	StopRun() error
 	ReScan() error
 	Workers() []control.WorkerInfo
+	WorkerPool() []control.WorkerPoolEntry
+	SetWorkerPool(pool []control.WorkerPoolEntry) error
 	QueryTasks(status taskstore.Status, offset, limit int) ([]taskstore.TaskItem, int)
 	Runs() []*history.Run
 	Run(id string) (*history.Run, bool)
@@ -98,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/workers", s.handleWorkers)
+	mux.HandleFunc("POST /api/workers/pool", s.handleSetWorkerPool)
 	mux.HandleFunc("POST /api/workers/spawn", s.handleSpawn)
 	mux.HandleFunc("POST /api/workers/stop", s.handleStopWorker)
 	mux.HandleFunc("GET /api/tasks", s.handleTasks)

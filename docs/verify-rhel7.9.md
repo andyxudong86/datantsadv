@@ -251,17 +251,22 @@ curl -s -X POST -u admin:CHANGE-ME http://127.0.0.1:8080/api/stop
 
 ### 4.6 按 IP 圈定 Worker 验证
 
-一个只放行 `127.0.0.1` 的 run：本机拉起/启动的 worker（来源 IP 正是 127.0.0.1）能正常领任务，从其它机器启动的 worker 只能注册但领不到任务（其 `/api/workers` 里 `files_done` 恒为 0，任务全留在 pending）：
+Worker 页"Worker 池"保存的节点列表会在每次发起迁移时自动作为派发白名单（没有保存池 = 不设限，所有已连线 worker 都可参与）。池内且已连线的节点在 `/api/workers` 中 `ready: true`（界面上显示"准备接收任务"），池外 worker 只能注册但领不到任务（其 `files_done` 恒为 0，任务全留在 pending）。
 
 ```bash
-curl -s -u admin:CHANGE-ME -X POST http://127.0.0.1:8080/api/start -H 'Content-Type: application/json' \
-  -d '{"src":"/mnt/source","dst":"/mnt/destination","worker_ips":["127.0.0.1"]}'
-curl -s -u admin:CHANGE-ME http://127.0.0.1:8080/api/workers   # 期望：本机 worker files_done>0，其它机 worker files_done=0
-
-# 不指定 worker_ips = 不设限，所有已连 worker 都可参与（默认行为）
+# 保存 Worker 池（只有 127.0.0.1 可领任务）
+curl -s -u admin:CHANGE-ME -X POST http://127.0.0.1:8080/api/workers/pool -H 'Content-Type: application/json' \
+  -d '{"workers":[{"ip":"127.0.0.1","capacity":8,"batch":64}]}'
 curl -s -u admin:CHANGE-ME -X POST http://127.0.0.1:8080/api/start -H 'Content-Type: application/json' \
   -d '{"src":"/mnt/source","dst":"/mnt/destination"}'
+curl -s -u admin:CHANGE-ME http://127.0.0.1:8080/api/workers   # 期望：本机 worker ready=true 且 files_done>0，其它机 worker ready=false / files_done=0
+
+# 清空池 = 恢复默认：所有已连 worker 都可参与
+curl -s -u admin:CHANGE-ME -X POST http://127.0.0.1:8080/api/workers/pool -H 'Content-Type: application/json' \
+  -d '{"workers":[]}'
 ```
+
+低层接口仍支持每次 run 单独指定：`POST /api/start` 里传 `"worker_ips":["127.0.0.1"]` 覆盖池（传了就不看池）。
 
 ---
 

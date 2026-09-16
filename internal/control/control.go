@@ -11,9 +11,12 @@ package control
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +53,9 @@ type Config struct {
 	// WorkerTimeout is how long without a heartbeat a worker is considered
 	// disconnected. Default 60s.
 	WorkerTimeout time.Duration
+	// WorkerPoolFile, if set, is a JSON file the controller loads the declared
+	// worker pool from at boot and rewrites whenever SetWorkerPool is called.
+	WorkerPoolFile string
 }
 
 // workerState is the Controller's per-worker bookkeeping, guarded by mu.
@@ -80,6 +86,21 @@ type WorkerInfo struct {
 	BytesDone   int64
 }
 
+// WorkerPoolEntry describes one worker node the operator declared on the web
+// console's Workers page. IP is the controller-side address the da_worker must
+// connect from to be allowed to pull tasks for a run. Local entries are
+// metadata for console-launched workers (spawn params); remote entries are
+// declarations of nodes that run their own da_worker. Entries with an empty IP
+// are inert (they never gate runs) and exist only to carry node parameters.
+type WorkerPoolEntry struct {
+	ID       string `json:"id,omitempty"`
+	IP       string `json:"ip,omitempty"`
+	Local    bool   `json:"local,omitempty"`
+	Count    int    `json:"count,omitempty"`    // local: how many workers to launch
+	Capacity int    `json:"capacity,omitempty"` // concurrent copy workers
+	Batch    int    `json:"batch,omitempty"`    // tasks per claim
+}
+
 // ServerState is a composite snapshot of the controller for the web layer,
 // gathered in one lock hold.
 type ServerState struct {
@@ -101,6 +122,9 @@ type Controller struct {
 	nextID int
 	// workers tracks per-worker bookkeeping keyed by id.
 	workers map[string]*workerState
+	// workerPool is the operator-declared node set from the Workers page. Runs
+	// without an explicit allowlist fall back to the pool's IPs. Guarded by mu.
+	workerPool []WorkerPoolEntry
 	// runState gates task claims (see RunState). Guarded by mu.
 	runState RunState
 	// active tracks the single run currently in flight. Guarded by mu.
@@ -126,7 +150,7 @@ func NewController(store *taskstore.Store, cfg Config) *Controller {
 	if cfg.WorkerTimeout <= 0 {
 		cfg.WorkerTimeout = 60 * time.Second
 	}
-	return &Controller{
+	ctl := &Controller{
 		store:    store,
 		cfg:      cfg,
 		logger:   cfg.Logger,
@@ -135,6 +159,36 @@ func NewController(store *taskstore.Store, cfg Config) *Controller {
 		runState: RunRunning, // legacy direct-ingest flow grants claims by default
 		quit:     make(chan struct{}),
 	}
+	if cfg.WorkerPoolFile != "" {
+		if pool, err := loadWorkerPool(cfg.WorkerPoolFile); err != nil {
+			if cfg.Logger != nil {
+				cfg.Logger.Printf("control: load worker pool %s: %v", cfg.WorkerPoolFile, err)
+			}
+		} else {
+			ctl.workerPool = pool
+		}
+	}
+	return ctl
+}
+
+// loadWorkerPool reads a persisted worker pool; a missing file yields an empty
+// pool with nil error.
+func loadWorkerPool(path string) ([]WorkerPoolEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var pool []WorkerPoolEntry
+	if err := json.Unmarshal(data, &pool); err != nil {
+		return nil, err
+	}
+	for i := range pool {
+		pool[i].IP = NormalizeIP(pool[i].IP)
+	}
+	return pool, nil
 }
 
 // IngestTasks adds a batch of tasks to the store. Used by the scan phase.
@@ -151,6 +205,68 @@ func (c *Controller) SetIdle() {
 	c.mu.Lock()
 	c.runState = RunIdle
 	c.mu.Unlock()
+}
+
+// WorkerPool returns a copy of the declared worker pool.
+func (c *Controller) WorkerPool() []WorkerPoolEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]WorkerPoolEntry, len(c.workerPool))
+	copy(out, c.workerPool)
+	return out
+}
+
+// SetWorkerPool replaces the declared pool, normalizes its IPs and persists it
+// to the configured pool file (if any). The caller is responsible for IP
+// validity; invalid addresses are dropped.
+func (c *Controller) SetWorkerPool(pool []WorkerPoolEntry) error {
+	clean := make([]WorkerPoolEntry, 0, len(pool))
+	for _, e := range pool {
+		e.IP = NormalizeIP(e.IP)
+		if e.IP == "" && !e.Local {
+			continue // skip anonymous remote declarations
+		}
+		clean = append(clean, e)
+	}
+	c.mu.Lock()
+	c.workerPool = clean
+	file := c.cfg.WorkerPoolFile
+	c.mu.Unlock()
+	if file == "" {
+		return nil
+	}
+	return saveWorkerPool(file, clean)
+}
+
+// poolIPs returns the normalized non-empty IPs of the declared pool. The
+// caller must not hold mu.
+func (c *Controller) poolIPs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := map[string]bool{}
+	var ips []string
+	for _, e := range c.workerPool {
+		ip := NormalizeIP(e.IP)
+		if ip == "" || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+// saveWorkerPool persists the pool as JSON via an atomic rename.
+func saveWorkerPool(path string, pool []WorkerPoolEntry) error {
+	data, err := json.MarshalIndent(pool, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Start launches the background stale-claim reclaimer and (when a logger is

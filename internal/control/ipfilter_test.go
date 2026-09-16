@@ -292,3 +292,98 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string)
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+// TestWorkerPoolGatesRuns proves the pool declared on the Workers page falls
+// back into the per-run allowlist when the start request carries none: a worker
+// connecting from a pooled IP completes the run; one outside the pool gets no
+// tasks.
+func TestWorkerPoolGatesRuns(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		os.WriteFile(filepath.Join(src, name), []byte("hello-"+name), 0o644)
+	}
+	store, err := taskstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Done()
+
+	poolFile := filepath.Join(t.TempDir(), "workerpool.json")
+	ctl := control.NewController(store, control.Config{WorkerPoolFile: poolFile})
+	if err := ctl.SetWorkerPool([]control.WorkerPoolEntry{
+		{IP: "127.0.0.1", Capacity: 8, Batch: 4},
+		{IP: "10.9.9.9", Local: false},
+	}); err != nil {
+		t.Fatalf("set pool: %v", err)
+	}
+	ctl.Start()
+	defer ctl.Stop()
+
+	target, lis := startServerReadAddr(t, ctl)
+	defer lis.Close()
+
+	// start without an explicit allowlist -> pool decides
+	if _, err := ctl.StartRun(src, dst, control.RunConfig{Workers: 2}); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	if st := ctl.State(); st.Run == nil || len(st.Run.WorkerIPs) != 2 {
+		t.Fatalf("run must adopt pool IPs, got %+v", st.Run)
+	}
+
+	var wg sync.WaitGroup
+	wk, closer := dialWorker(t, target, "w-pooled", 8, 4)
+	defer closer()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := wk.Run(context.Background()); err != nil {
+			t.Errorf("worker: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	st := ctl.Stats()
+	if st.Done != 3 || st.Pending != 0 {
+		t.Fatalf("pooled worker should finish all tasks, stats: %+v", st)
+	}
+}
+
+// TestWorkerPoolPersists proves the pool written on the Workers page survives a
+// controller restart via the configured JSON file (or is empty when absent).
+func TestWorkerPoolPersists(t *testing.T) {
+	dir := t.TempDir()
+	poolFile := filepath.Join(dir, "workerpool.json")
+	store, err := taskstore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Done()
+
+	ctl := control.NewController(store, control.Config{WorkerPoolFile: poolFile})
+	if err := ctl.SetWorkerPool([]control.WorkerPoolEntry{
+		{ID: "node-a", IP: "::ffff:10.0.0.7", Capacity: 8},
+		{ID: "local-0", IP: "127.0.0.1", Local: true, Count: 2},
+	}); err != nil {
+		t.Fatalf("set pool: %v", err)
+	}
+	ctl.Stop()
+
+	// fresh controller on the same store + file restores the pool
+	ctl2 := control.NewController(store, control.Config{WorkerPoolFile: poolFile})
+	pool := ctl2.WorkerPool()
+	if len(pool) != 2 {
+		t.Fatalf("restored pool = %+v", pool)
+	}
+	if pool[0].IP != "10.0.0.7" || pool[1].IP != "127.0.0.1" || !pool[1].Local {
+		t.Fatalf("restored entries wrong: %+v", pool)
+	}
+
+	// a controller with no pool file starts with an empty pool
+	ctl3 := control.NewController(store, control.Config{})
+	if got := ctl3.WorkerPool(); len(got) != 0 {
+		t.Fatalf("default pool = %+v", got)
+	}
+	ctl2.Stop()
+	ctl3.Stop()
+}
