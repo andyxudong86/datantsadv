@@ -46,7 +46,7 @@ func newFake() *fake {
 		},
 		workers: []control.WorkerInfo{
 			{
-				ID: "w1", Address: "10.0.0.1", Capacity: 8,
+				ID: "w1", IP: "10.0.0.1", Address: "10.0.0.1:1234", Capacity: 8,
 				Joined: now.Add(-time.Hour), LastSeen: now, Connected: true,
 				FilesDone: 10, FilesFailed: 1, BytesDone: 5000,
 			},
@@ -168,6 +168,9 @@ func TestWorkersEndpoint(t *testing.T) {
 	if _, ok := w["address"]; !ok {
 		t.Fatal("worker address missing")
 	}
+	if w["ip"] != "10.0.0.1" {
+		t.Fatalf("worker ip = %v", w["ip"])
+	}
 }
 
 func TestTasksEndpoint(t *testing.T) {
@@ -231,7 +234,7 @@ func TestRunsEndpoints(t *testing.T) {
 func TestStartEndpoint(t *testing.T) {
 	f := newFake()
 	srv := webapi.NewServer(f)
-	body := `{"src":"/s","dst":"/d","workers":4,"include_dirs":true,"delete_stale":true,"fresh":true,"ignore":["*.tmp"]}`
+	body := `{"src":"/s","dst":"/d","workers":4,"include_dirs":true,"delete_stale":true,"fresh":true,"ignore":["*.tmp"],"worker_ips":["127.0.0.2","10.1.1.1"]}`
 	rr := do(t, srv.Handler(), "POST", "/api/start", body)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
@@ -246,6 +249,9 @@ func TestStartEndpoint(t *testing.T) {
 	cfg := f.startCfg
 	if cfg.Workers != 4 || !cfg.IncludeDirs || !cfg.DeleteStale || !cfg.Fresh || len(cfg.Ignore) != 1 {
 		t.Fatalf("start cfg = %+v", cfg)
+	}
+	if len(cfg.WorkerIPs) != 2 || cfg.WorkerIPs[0] != "127.0.0.2" || cfg.WorkerIPs[1] != "10.1.1.1" {
+		t.Fatalf("worker_ips = %v", cfg.WorkerIPs)
 	}
 }
 

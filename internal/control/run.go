@@ -46,6 +46,10 @@ type RunConfig struct {
 	// from scratch. Otherwise only changed entries are enqueued, preserving the
 	// incremental/resume semantics of the original tool.
 	Fresh bool
+	// WorkerIPs restricts which workers may pull tasks for this run, by the IP
+	// the controller sees them connect from (as shown in /api/workers). Empty
+	// or nil means any connected worker may participate.
+	WorkerIPs []string
 }
 
 // RunSummary is a cheap snapshot of the active run, for the web layer and tests.
@@ -58,6 +62,7 @@ type RunSummary struct {
 	BytesFailed  int64
 	ScannedTasks int64
 	ScanDone     bool
+	WorkerIPs    []string
 }
 
 // activeRun holds the mutable bookkeeping of the one run currently in flight.
@@ -110,6 +115,7 @@ func (c *Controller) StartRun(src, dst string, cfg RunConfig) (string, error) {
 				SyncMeta:    cfg.SyncMeta,
 				DeleteStale: cfg.DeleteStale,
 				Ignore:      cfg.Ignore,
+				WorkerIPs:   cfg.WorkerIPs,
 			},
 			StartedAt: run.startedAt,
 			Status:    history.StatusRunning,

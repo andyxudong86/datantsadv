@@ -247,6 +247,20 @@ curl -s -u admin:CHANGE-ME http://127.0.0.1:8080/api/status  # state: "running"
 curl -s -X POST -u admin:CHANGE-ME http://127.0.0.1:8080/api/stop
 ```
 
+### 4.6 按 IP 圈定 Worker 验证
+
+一个只放行 `127.0.0.1` 的 run：本机拉起/启动的 worker（来源 IP 正是 127.0.0.1）能正常领任务，从其它机器启动的 worker 只能注册但领不到任务（其 `/api/workers` 里 `files_done` 恒为 0，任务全留在 pending）：
+
+```bash
+curl -s -u admin:CHANGE-ME -X POST http://127.0.0.1:8080/api/start -H 'Content-Type: application/json' \
+  -d '{"src":"/mnt/source","dst":"/mnt/destination","worker_ips":["127.0.0.1"]}'
+curl -s -u admin:CHANGE-ME http://127.0.0.1:8080/api/workers   # 期望：本机 worker files_done>0，其它机 worker files_done=0
+
+# 不指定 worker_ips = 不设限，所有已连 worker 都可参与（默认行为）
+curl -s -u admin:CHANGE-ME -X POST http://127.0.0.1:8080/api/start -H 'Content-Type: application/json' \
+  -d '{"src":"/mnt/source","dst":"/mnt/destination"}'
+```
+
 ---
 
 ## 5. systemd 服务化验证（可选）

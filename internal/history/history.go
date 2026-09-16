@@ -43,6 +43,7 @@ type Config struct {
 	SyncMeta    bool     `json:"sync_meta,omitempty"`
 	DeleteStale bool     `json:"delete_stale,omitempty"`
 	Ignore      []string `json:"ignore,omitempty"`
+	WorkerIPs   []string `json:"worker_ips,omitempty"`
 }
 
 // Result summarizes the transfer outcome of a run.

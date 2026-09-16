@@ -76,6 +76,7 @@ type workerBriefDTO struct {
 
 type workerDTO struct {
 	ID          string    `json:"id"`
+	IP          string    `json:"ip,omitempty"`
 	Address     string    `json:"address"`
 	Capacity    int       `json:"capacity"`
 	Connected   bool      `json:"connected"`
@@ -89,6 +90,7 @@ type workerDTO struct {
 func toWorkerDTO(w control.WorkerInfo) workerDTO {
 	return workerDTO{
 		ID:          w.ID,
+		IP:          w.IP,
 		Address:     w.Address,
 		Capacity:    w.Capacity,
 		Connected:   w.Connected,
@@ -115,6 +117,7 @@ type runSummaryDTO struct {
 	ScannedTasks int64     `json:"scanned_tasks"`
 	ScanDone     bool      `json:"scan_done"`
 	ElapsedMs    int64     `json:"elapsed_ms"`
+	WorkerIPs    []string  `json:"worker_ips,omitempty"`
 }
 
 func toRunSummaryDTO(r control.RunSummary) runSummaryDTO {
@@ -132,6 +135,7 @@ func toRunSummaryDTO(r control.RunSummary) runSummaryDTO {
 		ScannedTasks: r.ScannedTasks,
 		ScanDone:     r.ScanDone,
 		ElapsedMs:    elapsed.Milliseconds(),
+		WorkerIPs:    r.WorkerIPs,
 	}
 }
 

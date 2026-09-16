@@ -9,6 +9,7 @@
 - 临时文件 + 原子重命名：崩溃不会留下半写文件
 - 带宽限流、有界内存，支撑千万级文件
 - 分布式：控制机扫描 + gRPC 调度，Worker 主动拉取任务，失败自动重派
+- 按 IP 圈定参与迁移的 Worker：启动任务时指定允许的 Worker IP 列表，名单外 Worker 领不到任何任务
 
 ## 构建
 
@@ -150,7 +151,7 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 `da_control` 支持两种启动方式，推荐第 ① 种：
 
 **① 待命模式（推荐，GUI 全程控制）**——不带 `--src/--dst`，控制机只起 gRPC + Web，
-迁移由控制台"启动迁移"表单（或 `POST /api/start`）发起，源/目标、并发、忽略列表等都在界面上填：
+迁移由控制台"启动迁移"表单（或 `POST /api/start`）发起，源/目标、并发、忽略列表等都在界面上填。表单"**仅允许的 Worker IP**"可把任务派发限定到指定的几台 Worker（逗号分隔多台；留空表示所有已上线 Worker 都能领任务）：
 
 ```sh
 nohup da_control \

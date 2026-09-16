@@ -1,4 +1,4 @@
-﻿package e2e
+package e2e
 
 import (
 	"bytes"
@@ -476,6 +476,9 @@ func TestWebonlyStandbySmoke(t *testing.T) {
 		"workers":   2,
 		"fresh":     true,
 		"sync_meta": false,
+		// The console-spawned worker connects from the loopback, so it must be
+		// reachable under a run restricted to its own IP.
+		"worker_ips": []string{"127.0.0.1"},
 	})
 	resp, err := http.Post(base+"/api/start", "application/json", bytes.NewReader(body))
 	if err != nil {

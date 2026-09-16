@@ -149,6 +149,7 @@
   $("#startform").addEventListener("submit", function (e) {
     e.preventDefault();
     var ignore = $("#f-ignore").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+    var workerIPs = $("#f-worker-ips").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
     var body = {
       src: $("#f-src").value.trim(),
       dst: $("#f-dst").value.trim(),
@@ -157,7 +158,8 @@
       sync_meta: $("#f-meta").checked,
       delete_stale: $("#f-del").checked,
       fresh: $("#f-fresh").checked,
-      ignore: ignore
+      ignore: ignore,
+      worker_ips: workerIPs
     };
     if (!body.src || !body.dst) { $("#start-err").textContent = "请填写源目录和目标目录。"; return; }
     $("#btn-start").disabled = true;
@@ -243,7 +245,8 @@
         var cls = w.connected ? "running" : "idle";
         return '<div class="worker-card">' +
           '<div class="w-id">' + esc(w.id) + " " + badge(cls, w.connected ? "在线" : "离线") + "</div>" +
-          '<div class="w-meta">地址 ' + esc(w.address || "—") + " · 并发 " + (w.capacity || "—") + "</div>" +
+          '<div class="w-meta">IP ' + esc(w.ip || "—") + " · 并发 " + (w.capacity || "—") + "</div>" +
+          '<div class="w-meta">地址 ' + esc(w.address || "—") + "</div>" +
           '<div class="w-meta">已完成 ' + w.files_done + " 文件 / " + fmtBytes(w.bytes_done) + " · 失败 " + w.files_failed + "</div>" +
           '<div class="w-meta">注册 ' + fmtTime(w.joined_at) + "</div>" +
           "</div>";

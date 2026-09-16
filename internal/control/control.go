@@ -13,12 +13,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	migratev1 "datants/gen/migrate/v1"
@@ -52,6 +55,7 @@ type Config struct {
 // workerState is the Controller's per-worker bookkeeping, guarded by mu.
 type workerState struct {
 	id          string
+	ip          string
 	address     string
 	capacity    int
 	joined      time.Time
@@ -65,6 +69,7 @@ type workerState struct {
 // counters, for the web layer.
 type WorkerInfo struct {
 	ID          string
+	IP          string
 	Address     string
 	Capacity    int
 	Joined      time.Time
@@ -206,14 +211,17 @@ func (c *Controller) Register(ctx context.Context, req *migratev1.RegisterReques
 		c.mu.Unlock()
 	}
 	now := time.Now()
+	peerIP := claimPeerIP(ctx)
 	c.mu.Lock()
 	if w, ok := c.workers[id]; ok {
 		w.address = req.GetAddress()
+		w.ip = peerIP
 		w.capacity = int(req.GetCapacity())
 		w.lastSeen = now
 	} else {
 		c.workers[id] = &workerState{
 			id:       id,
+			ip:       peerIP,
 			address:  req.GetAddress(),
 			capacity: int(req.GetCapacity()),
 			joined:   now,
@@ -228,9 +236,16 @@ func (c *Controller) Register(ctx context.Context, req *migratev1.RegisterReques
 func (c *Controller) Claim(ctx context.Context, req *migratev1.ClaimRequest) (*migratev1.ClaimResponse, error) {
 	c.mu.Lock()
 	claimsAllowed := c.runState == RunRunning
+	if claimsAllowed && c.active != nil && len(c.active.cfg.WorkerIPs) > 0 {
+		// Only the workers the operator included in this run may pull tasks.
+		if !IPAllowed(claimPeerIP(ctx), c.active.cfg.WorkerIPs) {
+			claimsAllowed = false
+		}
+	}
 	c.mu.Unlock()
 	if !claimsAllowed {
-		// paused, idle or stopped: hold all tasks until the run resumes.
+		// paused, idle, stopped or outside the run's worker allowlist: hold all
+		// tasks until the run resumes.
 		return &migratev1.ClaimResponse{}, nil
 	}
 	batch := int(req.GetBatchSize())
@@ -333,6 +348,7 @@ func (c *Controller) Workers() []WorkerInfo {
 	for _, w := range c.workers {
 		out = append(out, WorkerInfo{
 			ID:          w.id,
+			IP:          w.ip,
 			Address:     w.address,
 			Capacity:    w.capacity,
 			Joined:      w.joined,
@@ -367,11 +383,13 @@ func (c *Controller) State() ServerState {
 			BytesFailed:  r.bytesFailed,
 			ScannedTasks: r.scanned,
 			ScanDone:     r.scanDone,
+			WorkerIPs:    r.cfg.WorkerIPs,
 		}
 	}
 	for _, w := range c.workers {
 		st.Workers = append(st.Workers, WorkerInfo{
 			ID:          w.id,
+			IP:          w.ip,
 			Address:     w.address,
 			Capacity:    w.capacity,
 			Joined:      w.joined,
@@ -444,4 +462,52 @@ func FromProto(t *migratev1.Task) taskstore.Task {
 		Uid:     t.GetUid(),
 		Gid:     t.GetGid(),
 	}
+}
+
+// claimPeerIP extracts the remote address of the caller of a gRPC method, as an
+// IP host without the port. "::ffff:127.0.0.1" style IPv4-in-IPv6 mappings are
+// unwrapped so a worker shows up as plain "127.0.0.1".
+func claimPeerIP(ctx context.Context) string {
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		return NormalizeIP(hostOf(p.Addr.String()))
+	}
+	return ""
+}
+
+// hostOf splits "host:port" and returns the host (the full string when there is
+// no port).
+func hostOf(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
+}
+
+// NormalizeIP unwraps IPv4-mapped IPv6 addresses and brackets.
+func NormalizeIP(ip string) string {
+	ip = strings.TrimSpace(strings.Trim(ip, "[]"))
+	if i := strings.LastIndex(ip, "::ffff:"); i >= 0 {
+		ip = ip[i+len("::ffff:"):]
+	}
+	return ip
+}
+
+// IPAllowed reports whether ip is present in the allowlist. Both sides are
+// normalized (IPv4-mapped IPv6 unwrapped). An empty allowlist means everyone
+// qualifies; an empty (unknown) peer IP never qualifies against a non-empty
+// list.
+func IPAllowed(ip string, allowed []string) bool {
+	ip = NormalizeIP(ip)
+	if len(allowed) == 0 {
+		return true
+	}
+	if ip == "" {
+		return false
+	}
+	for _, a := range allowed {
+		if ip == NormalizeIP(strings.TrimSpace(a)) {
+			return true
+		}
+	}
+	return false
 }

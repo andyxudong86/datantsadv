@@ -258,6 +258,7 @@ type startRequestDTO struct {
 	DeleteStale bool     `json:"delete_stale"`
 	Ignore      []string `json:"ignore"`
 	Fresh       bool     `json:"fresh"`
+	WorkerIPs   []string `json:"worker_ips"`
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
@@ -277,6 +278,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		DeleteStale: req.DeleteStale,
 		Ignore:      req.Ignore,
 		Fresh:       req.Fresh,
+		WorkerIPs:   req.WorkerIPs,
 	}
 	id, err := s.ctl.StartRun(req.Src, req.Dst, cfg)
 	if err != nil {
