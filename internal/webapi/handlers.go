@@ -425,17 +425,24 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toRunDTO(run))
 }
 
+// startTargetDTO is one src→dst pair in a multi-directory start request.
+type startTargetDTO struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+}
+
 // startRequestDTO is the JSON body of POST /api/start.
 type startRequestDTO struct {
-	Src         string   `json:"src"`
-	Dst         string   `json:"dst"`
-	Workers     int      `json:"workers"`
-	IncludeDirs bool     `json:"include_dirs"`
-	SyncMeta    bool     `json:"sync_meta"`
-	DeleteStale bool     `json:"delete_stale"`
-	Ignore      []string `json:"ignore"`
-	Fresh       bool     `json:"fresh"`
-	WorkerIPs   []string `json:"worker_ips"`
+	Src         string           `json:"src"`
+	Dst         string           `json:"dst"`
+	Targets     []startTargetDTO `json:"targets"`
+	Workers     int              `json:"workers"`
+	IncludeDirs bool             `json:"include_dirs"`
+	SyncMeta    bool             `json:"sync_meta"`
+	DeleteStale bool             `json:"delete_stale"`
+	Ignore      []string         `json:"ignore"`
+	Fresh       bool             `json:"fresh"`
+	WorkerIPs   []string         `json:"worker_ips"`
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
@@ -444,9 +451,19 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	if req.Src == "" || req.Dst == "" {
-		writeErr(w, http.StatusBadRequest, "src and dst are required")
-		return
+	var targets []control.RunTarget
+	if len(req.Targets) > 0 {
+		for _, t := range req.Targets {
+			targets = append(targets, control.RunTarget{Src: t.Src, Dst: t.Dst})
+		}
+	} else {
+		targets = []control.RunTarget{{Src: req.Src, Dst: req.Dst}}
+	}
+	for _, t := range targets {
+		if t.Src == "" || t.Dst == "" {
+			writeErr(w, http.StatusBadRequest, "src and dst are required for every target")
+			return
+		}
 	}
 	cfg := control.RunConfig{
 		Workers:     req.Workers,
@@ -457,12 +474,12 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		Fresh:       req.Fresh,
 		WorkerIPs:   req.WorkerIPs,
 	}
-	id, err := s.ctl.StartRun(req.Src, req.Dst, cfg)
+	id, err := s.ctl.StartRuns(targets, cfg)
 	if err != nil {
 		writeErr(w, commandErr(err), err.Error())
 		return
 	}
-	s.logf("start run %s %s -> %s", id, req.Src, req.Dst)
+	s.logf("start run %s targets=%d", id, len(targets))
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 

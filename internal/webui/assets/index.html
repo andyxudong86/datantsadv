@@ -52,11 +52,21 @@
         <div class="card-title">启动迁移</div>
         <form id="startform" class="form">
           <div class="grid">
-            <label>源目录<input id="f-src" required placeholder="/mnt/source"></label>
-            <label>目标目录<input id="f-dst" required placeholder="/mnt/destination"></label>
             <label>忽略片段<input id="f-ignore" placeholder="逗号分隔，可留空"></label>
           </div>
-          <div class="row">
+          <div id="target-list">
+            <div class="target-row" data-idx="0">
+              <b>目标 1</b>
+              <div class="grid">
+                <label>源目录<input class="target-src" required placeholder="/mnt/source"></label>
+                <label>目标目录<input class="target-dst" required placeholder="/mnt/destination"></label>
+              </div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:.4rem">
+            <button type="button" id="add-target" class="ghost">+ 添加一组目录</button>
+          </div>
+          <div class="row" style="margin-top:.4rem">
             <label class="check"><input id="f-dirs" type="checkbox"> 迁移空目录</label>
             <label class="check"><input id="f-meta" type="checkbox"> 同步权限/属主</label>
             <label class="check"><input id="f-del" type="checkbox"> 删除多余条目</label>
@@ -64,7 +74,7 @@
           </div>
           <button id="btn-start" class="primary">开始迁移</button>
         </form>
-        <div class="muted">任务派发给下方 Worker 页已配置、处于“准备接收任务”状态的节点；未保存 Worker 池时派发给全部在线 Worker。</div>
+        <div class="muted">任务派发给下方 Worker 页已配置、处于"准备接收任务"状态的节点；未保存 Worker 池时派发给全部在线 Worker。可添加多组目录同时迁移。</div>
         <div id="start-err" class="error"></div>
       </div>
     </section>
@@ -120,7 +130,7 @@
         <div class="card-title">Worker 池（参与迁移的节点）
           <button id="pool-fill" class="ghost">填入在线 Worker</button>
         </div>
-        <div class="muted">每行一个节点：IP [并发] [批次]，如 <tt>10.0.0.7 8 64</tt>。保存后，只有池内的节点会处于“准备接收任务”状态，迁移只派发给它们。“启动”会通过 SSH 在对应机器上拉起 da_worker（控制机需 <tt>--ssh-user</tt>/<tt>--ssh-key</tt>）；本机“启动 Worker”自动把 127.0.0.1 加入池。</div>
+        <div class="muted">每行一个节点：IP [并发] [批次]，如 <tt>10.0.0.7 8 64</tt>。保存后，只有池内的节点会处于"准备接收任务"状态，迁移只派发给它们。"启动"会通过 SSH 在对应机器上拉起 da_worker（控制机需 <tt>--ssh-user</tt>/<tt>--ssh-key</tt>）；本机"启动 Worker"自动把 127.0.0.1 加入池。</div>
         <form id="poolform" class="form">
           <textarea id="pool-ips" rows="4" placeholder="10.0.0.7 8 64&#10;10.0.0.8"></textarea>
           <button id="pool-save" class="primary">保存 Worker 池</button>

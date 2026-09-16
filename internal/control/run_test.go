@@ -159,6 +159,81 @@ func TestStartRunArgValidation(t *testing.T) {
 	}
 }
 
+func TestStartRunsMultiTarget(t *testing.T) {
+	ctl, hist, _, _, _ := newStory(t)
+
+	// pair 1: five files
+	src1 := t.TempDir()
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(src1, fmt.Sprintf("f%d.txt", i)), []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst1 := t.TempDir()
+	// pair 2: three files
+	src2 := t.TempDir()
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(filepath.Join(src2, fmt.Sprintf("g%d.txt", i)), []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst2 := t.TempDir()
+
+	id, err := ctl.StartRuns([]control.RunTarget{
+		{Src: src1, Dst: dst1},
+		{Src: src2, Dst: dst2},
+	}, control.RunConfig{Workers: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" {
+		t.Fatal("StartRuns returned empty id")
+	}
+	if !waitScanDone(t, ctl) {
+		t.Fatal("scan did not finish")
+	}
+
+	done, _ := claimAndRun(t, ctl, "multi-worker")
+	if done != 8 {
+		t.Fatalf("processed %d tasks, want 8 (5+3)", done)
+	}
+	waitForRunEnd(t, ctl, 5*time.Second)
+
+	r, ok := hist.Get(id)
+	if !ok {
+		t.Fatal("run missing from history")
+	}
+	if r.Status != history.StatusDone {
+		t.Fatalf("run status = %s, want done", r.Status)
+	}
+	if len(r.Targets) != 2 || r.Targets[0].Src != src1 || r.Targets[1].Dst != dst2 {
+		t.Fatalf("run targets = %+v", r.Targets)
+	}
+	if r.Src != src1 || r.Dst != dst1 {
+		t.Fatalf("run first pair = %q %q", r.Src, r.Dst)
+	}
+	if r.Result.FilesDone != 8 {
+		t.Fatalf("files_done = %d, want 8", r.Result.FilesDone)
+	}
+}
+
+func TestStartRunsValidation(t *testing.T) {
+	ctl, _, _, src, dst := newStory(t)
+	if _, err := ctl.StartRuns(nil, control.RunConfig{}); err == nil {
+		t.Fatal("StartRuns with no targets should fail")
+	}
+	if _, err := ctl.StartRuns([]control.RunTarget{{Src: "", Dst: dst}}, control.RunConfig{}); err == nil {
+		t.Fatal("StartRuns with empty src should fail")
+	}
+	if _, err := ctl.StartRuns([]control.RunTarget{{Src: src, Dst: ""}}, control.RunConfig{}); err == nil {
+		t.Fatal("StartRuns with empty dst should fail")
+	}
+	// the single-target StartRun wrapper must reject empty args too
+	if _, err := ctl.StartRun("", dst, control.RunConfig{}); err == nil {
+		t.Fatal("StartRun with empty src should fail")
+	}
+}
+
 func TestStartRunRejectsConcurrentRun(t *testing.T) {
 	ctl, _, _, src, dst := newStory(t)
 	if _, err := ctl.StartRun(src, dst, control.RunConfig{}); err != nil {

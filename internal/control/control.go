@@ -81,6 +81,7 @@ type WorkerInfo struct {
 	Joined      time.Time
 	LastSeen    time.Time
 	Connected   bool
+	InPool      bool
 	FilesDone   int64
 	FilesFailed int64
 	BytesDone   int64
@@ -363,16 +364,23 @@ func (c *Controller) Register(ctx context.Context, req *migratev1.RegisterReques
 func (c *Controller) Claim(ctx context.Context, req *migratev1.ClaimRequest) (*migratev1.ClaimResponse, error) {
 	c.mu.Lock()
 	claimsAllowed := c.runState == RunRunning
+	allowlistBlocked := false
 	if claimsAllowed && c.active != nil && len(c.active.cfg.WorkerIPs) > 0 {
 		// Only the workers the operator included in this run may pull tasks.
 		if !IPAllowed(claimPeerIP(ctx), c.active.cfg.WorkerIPs) {
 			claimsAllowed = false
+			allowlistBlocked = true
 		}
 	}
 	c.mu.Unlock()
 	if !claimsAllowed {
 		// paused, idle, stopped or outside the run's worker allowlist: hold all
 		// tasks until the run resumes.
+		if allowlistBlocked {
+			// A running run that silently holds every worker is almost always a
+			// worker-pool/ip mismatch; say so instead of hiding the problem.
+			c.logf("claim denied worker=%s ip=%s (not in run allowlist)", req.GetWorkerId(), claimPeerIP(ctx))
+		}
 		return &migratev1.ClaimResponse{}, nil
 	}
 	batch := int(req.GetBatchSize())
@@ -503,6 +511,7 @@ func (c *Controller) State() ServerState {
 	if r := c.active; r != nil {
 		st.Run = &RunSummary{
 			ID:           r.id,
+			Targets:      r.targets,
 			StartedAt:    r.startedAt,
 			FilesDone:    r.filesDone,
 			FilesFailed:  r.filesFailed,
@@ -513,7 +522,14 @@ func (c *Controller) State() ServerState {
 			WorkerIPs:    r.cfg.WorkerIPs,
 		}
 	}
+	poolIPs := make(map[string]bool, len(c.workerPool))
+	for _, e := range c.workerPool {
+		if ip := NormalizeIP(e.IP); ip != "" {
+			poolIPs[ip] = true
+		}
+	}
 	for _, w := range c.workers {
+		_, inPool := poolIPs[w.ip]
 		st.Workers = append(st.Workers, WorkerInfo{
 			ID:          w.id,
 			IP:          w.ip,
@@ -522,6 +538,7 @@ func (c *Controller) State() ServerState {
 			Joined:      w.joined,
 			LastSeen:    w.lastSeen,
 			Connected:   st.Now.Sub(w.lastSeen) <= c.cfg.WorkerTimeout,
+			InPool:      inPool,
 			FilesDone:   w.filesDone,
 			FilesFailed: w.filesFailed,
 			BytesDone:   w.bytesDone,

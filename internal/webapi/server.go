@@ -27,6 +27,7 @@ type ControlService interface {
 	State() control.ServerState
 	RunState() control.RunState
 	StartRun(src, dst string, cfg control.RunConfig) (string, error)
+	StartRuns(targets []control.RunTarget, cfg control.RunConfig) (string, error)
 	Pause() error
 	Resume() error
 	StopRun() error

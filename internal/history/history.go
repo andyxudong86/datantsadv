@@ -35,6 +35,12 @@ const (
 	StatusStopped Status = "stopped"
 )
 
+// Target is one source→destination directory pair within a migration run.
+type Target struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+}
+
 // Config snapshots the scan options a run was started with, so history shows
 // exactly how each migration was configured.
 type Config struct {
@@ -65,6 +71,7 @@ type Run struct {
 	ID         string    `json:"id"`
 	Src        string    `json:"src"`
 	Dst        string    `json:"dst"`
+	Targets    []Target  `json:"targets,omitempty"`
 	Config     Config    `json:"config"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`

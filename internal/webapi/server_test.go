@@ -27,6 +27,7 @@ type fake struct {
 
 	startSrc, startDst string
 	startCfg           control.RunConfig
+	startTargets       []control.RunTarget
 	startErr           error
 
 	pauseErr, resumeErr, stopErr, rescanErr error
@@ -99,6 +100,17 @@ func (f *fake) QueryTasks(status taskstore.Status, offset, limit int) ([]tasksto
 }
 func (f *fake) StartRun(src, dst string, cfg control.RunConfig) (string, error) {
 	f.startSrc, f.startDst, f.startCfg = src, dst, cfg
+	if f.startErr != nil {
+		return "", f.startErr
+	}
+	return "run-new", nil
+}
+func (f *fake) StartRuns(targets []control.RunTarget, cfg control.RunConfig) (string, error) {
+	if len(targets) > 0 {
+		f.startSrc, f.startDst = targets[0].Src, targets[0].Dst
+	}
+	f.startCfg = cfg
+	f.startTargets = targets
 	if f.startErr != nil {
 		return "", f.startErr
 	}
@@ -312,6 +324,35 @@ func TestStartEndpoint(t *testing.T) {
 	}
 	if len(cfg.WorkerIPs) != 2 || cfg.WorkerIPs[0] != "127.0.0.2" || cfg.WorkerIPs[1] != "10.1.1.1" {
 		t.Fatalf("worker_ips = %v", cfg.WorkerIPs)
+	}
+}
+
+func TestStartEndpointMultiTarget(t *testing.T) {
+	f := newFake()
+	srv := webapi.NewServer(f)
+	body := `{"src":"/s1","dst":"/d1","targets":[{"src":"/s1","dst":"/d1"},{"src":"/s2","dst":"/d2"}],"workers":2}`
+	rr := do(t, srv.Handler(), "POST", "/api/start", body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if len(f.startTargets) != 2 {
+		t.Fatalf("start targets = %+v", f.startTargets)
+	}
+	if f.startTargets[0].Src != "/s1" || f.startTargets[0].Dst != "/d1" ||
+		f.startTargets[1].Src != "/s2" || f.startTargets[1].Dst != "/d2" {
+		t.Fatalf("start targets = %+v", f.startTargets)
+	}
+	if f.startSrc != "/s1" || f.startDst != "/d1" {
+		t.Fatalf("start first src/dst = %q %q", f.startSrc, f.startDst)
+	}
+	if f.startCfg.Workers != 2 {
+		t.Fatalf("workers = %d", f.startCfg.Workers)
+	}
+
+	// a targets entry missing src or dst is a 400
+	rr = do(t, srv.Handler(), "POST", "/api/start", `{"targets":[{"src":"/s1","dst":""}]}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("empty dst in target code = %d body = %s", rr.Code, rr.Body.String())
 	}
 }
 

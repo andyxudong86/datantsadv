@@ -69,7 +69,9 @@ func toTaskStats(st taskstore.Stats) taskStatsDTO {
 // Worker short summary carried in every status push (full detail: /api/workers).
 type workerBriefDTO struct {
 	ID        string `json:"id"`
+	IP        string `json:"ip,omitempty"`
 	Connected bool   `json:"connected"`
+	Ready     bool   `json:"ready"`
 	FilesDone int64  `json:"files_done"`
 	BytesDone int64  `json:"bytes_done"`
 }
@@ -126,21 +128,30 @@ func fromWorkerPoolDTO(e workerPoolDTO) control.WorkerPoolEntry {
 }
 
 func toWorkerBriefDTO(w control.WorkerInfo) workerBriefDTO {
-	return workerBriefDTO{ID: w.ID, Connected: w.Connected, FilesDone: w.FilesDone, BytesDone: w.BytesDone}
+	return workerBriefDTO{ID: w.ID, IP: w.IP, Connected: w.Connected, Ready: w.Connected && w.InPool, FilesDone: w.FilesDone, BytesDone: w.BytesDone}
+}
+
+// runTargetDTO is one src→dst pair inside the active run.
+type runTargetDTO struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
 }
 
 // runSummaryDTO is the live snapshot of the active run.
 type runSummaryDTO struct {
-	ID           string    `json:"id"`
-	StartedAt    time.Time `json:"started_at"`
-	FilesDone    int64     `json:"files_done"`
-	FilesFailed  int64     `json:"files_failed"`
-	BytesDone    int64     `json:"bytes_done"`
-	BytesFailed  int64     `json:"bytes_failed"`
-	ScannedTasks int64     `json:"scanned_tasks"`
-	ScanDone     bool      `json:"scan_done"`
-	ElapsedMs    int64     `json:"elapsed_ms"`
-	WorkerIPs    []string  `json:"worker_ips,omitempty"`
+	ID           string         `json:"id"`
+	Targets      []runTargetDTO `json:"targets,omitempty"`
+	Src          string         `json:"src,omitempty"`
+	Dst          string         `json:"dst,omitempty"`
+	StartedAt    time.Time      `json:"started_at"`
+	FilesDone    int64          `json:"files_done"`
+	FilesFailed  int64          `json:"files_failed"`
+	BytesDone    int64          `json:"bytes_done"`
+	BytesFailed  int64          `json:"bytes_failed"`
+	ScannedTasks int64          `json:"scanned_tasks"`
+	ScanDone     bool           `json:"scan_done"`
+	ElapsedMs    int64          `json:"elapsed_ms"`
+	WorkerIPs    []string       `json:"worker_ips,omitempty"`
 }
 
 func toRunSummaryDTO(r control.RunSummary) runSummaryDTO {
@@ -148,8 +159,19 @@ func toRunSummaryDTO(r control.RunSummary) runSummaryDTO {
 	if elapsed < 0 {
 		elapsed = 0
 	}
+	targets := make([]runTargetDTO, 0, len(r.Targets))
+	for _, t := range r.Targets {
+		targets = append(targets, runTargetDTO{Src: t.Src, Dst: t.Dst})
+	}
+	var src, dst string
+	if len(r.Targets) > 0 {
+		src, dst = r.Targets[0].Src, r.Targets[0].Dst
+	}
 	return runSummaryDTO{
 		ID:           r.ID,
+		Targets:      targets,
+		Src:          src,
+		Dst:          dst,
 		StartedAt:    r.StartedAt,
 		FilesDone:    r.FilesDone,
 		FilesFailed:  r.FilesFailed,

@@ -2,6 +2,7 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"time"
 
@@ -52,9 +53,16 @@ type RunConfig struct {
 	WorkerIPs []string
 }
 
+// RunTarget is one source→destination directory pair for a migration run.
+type RunTarget struct {
+	Src string
+	Dst string
+}
+
 // RunSummary is a cheap snapshot of the active run, for the web layer and tests.
 type RunSummary struct {
 	ID           string
+	Targets      []RunTarget
 	StartedAt    time.Time
 	FilesDone    int64
 	FilesFailed  int64
@@ -69,8 +77,7 @@ type RunSummary struct {
 // Fields are guarded by Controller.mu.
 type activeRun struct {
 	id          string
-	src         string
-	dst         string
+	targets     []RunTarget
 	cfg         RunConfig
 	startedAt   time.Time
 	filesDone   int64
@@ -88,6 +95,21 @@ type activeRun struct {
 func (c *Controller) StartRun(src, dst string, cfg RunConfig) (string, error) {
 	if src == "" || dst == "" {
 		return "", errors.New("control: src and dst are required")
+	}
+	return c.StartRuns([]RunTarget{{Src: src, Dst: dst}}, cfg)
+}
+
+// StartRuns begins a new migration run covering one or more source→destination
+// directory pairs. Each pair is scanned independently; all resulting tasks share
+// one task store and one run lifecycle.
+func (c *Controller) StartRuns(targets []RunTarget, cfg RunConfig) (string, error) {
+	if len(targets) == 0 {
+		return "", errors.New("control: at least one src→dst target is required")
+	}
+	for _, t := range targets {
+		if t.Src == "" || t.Dst == "" {
+			return "", errors.New("control: every target must have both src and dst")
+		}
 	}
 	if cfg.Workers <= 0 {
 		cfg.Workers = runtime.GOMAXPROCS(0)
@@ -110,11 +132,16 @@ func (c *Controller) StartRun(src, dst string, cfg RunConfig) (string, error) {
 			return "", err
 		}
 	}
-	run := &activeRun{startedAt: time.Now(), src: src, dst: dst, cfg: cfg}
+	run := &activeRun{startedAt: time.Now(), targets: targets, cfg: cfg}
 	if c.cfg.History != nil {
+		histTargets := make([]history.Target, len(targets))
+		for i, t := range targets {
+			histTargets[i] = history.Target{Src: t.Src, Dst: t.Dst}
+		}
 		h := &history.Run{
-			Src: src,
-			Dst: dst,
+			Src:     targets[0].Src,
+			Dst:     targets[0].Dst,
+			Targets: histTargets,
 			Config: history.Config{
 				Workers:     cfg.Workers,
 				IncludeDirs: cfg.IncludeDirs,
@@ -136,7 +163,7 @@ func (c *Controller) StartRun(src, dst string, cfg RunConfig) (string, error) {
 	c.runState = RunRunning
 	c.mu.Unlock()
 
-	go c.runScan(run, src, dst, cfg)
+	go c.runScan(run, run.targets, cfg)
 	return run.id, nil
 }
 
@@ -213,6 +240,7 @@ func (c *Controller) CurrentRun() (RunSummary, bool) {
 	}
 	return RunSummary{
 		ID:           c.active.id,
+		Targets:      c.active.targets,
 		StartedAt:    c.active.startedAt,
 		FilesDone:    c.active.filesDone,
 		FilesFailed:  c.active.filesFailed,
@@ -237,30 +265,40 @@ func (c *Controller) ReScan() error {
 		return errors.New("control: a scan is already in progress")
 	}
 	run := c.active
-	src, dst, cfg := run.src, run.dst, run.cfg
+	targets, cfg := run.targets, run.cfg
 	run.scanDone = false
 	c.mu.Unlock()
 
-	c.logf("run %s rescanning %s -> %s", run.id, src, dst)
-	go c.runScan(run, src, dst, cfg)
+	c.logf("run %s rescanning %d targets", run.id, len(targets))
+	go c.runScan(run, targets, cfg)
 	return nil
 }
 
 // runScan performs the background scan+ingest for a started run.
-func (c *Controller) runScan(run *activeRun, src, dst string, cfg RunConfig) {
-	n, err := c.ScanAndIngest(src, dst, ScanConfig{
+func (c *Controller) runScan(run *activeRun, targets []RunTarget, cfg RunConfig) {
+	scfg := ScanConfig{
 		Workers:     cfg.Workers,
 		IncludeDirs: cfg.IncludeDirs,
 		Ignore:      cfg.Ignore,
 		SyncMeta:    cfg.SyncMeta,
 		DeleteStale: cfg.DeleteStale,
-	})
+	}
+	var total int64
+	var scanErr error
+	for _, tgt := range targets {
+		n, err := c.ScanAndIngest(tgt.Src, tgt.Dst, scfg)
+		total += n
+		if err != nil {
+			scanErr = fmt.Errorf("%s -> %s: %w", tgt.Src, tgt.Dst, err)
+			break
+		}
+	}
 	c.mu.Lock()
-	run.scanned = n
+	run.scanned = total
 	run.scanDone = true
 	c.mu.Unlock()
-	if err != nil {
-		c.logf("run %s scan failed: %v", run.id, err)
+	if scanErr != nil {
+		c.logf("run %s scan failed: %v", run.id, scanErr)
 		c.mu.Lock()
 		if c.active == run {
 			c.active = nil
@@ -270,7 +308,7 @@ func (c *Controller) runScan(run *activeRun, src, dst string, cfg RunConfig) {
 		c.mu.Unlock()
 		return
 	}
-	c.logf("run %s scanned %d tasks", run.id, n)
+	c.logf("run %s scanned %d tasks across %d targets", run.id, total, len(targets))
 	c.finalizeIfDone()
 }
 
