@@ -95,6 +95,7 @@ type spawnedDTO struct {
 	ExitedAt  *time.Time `json:"exited_at,omitempty"`
 	Remote    bool       `json:"remote,omitempty"`
 	Host      string     `json:"host,omitempty"`
+	ExitError string     `json:"exit_error,omitempty"`
 }
 
 // spawnedSnapshot combines the local and remote launch managers.
@@ -113,6 +114,7 @@ func (s *Server) spawnedSnapshot() []spawnedDTO {
 			out = append(out, spawnedDTO{
 				ID: si.ID, PID: si.PID, Alive: si.Alive, StartedAt: si.StartedAt,
 				Args: si.Args, ExitedAt: si.ExitedAt, Remote: true, Host: si.Host,
+				ExitError: si.ExitError,
 			})
 		}
 	}

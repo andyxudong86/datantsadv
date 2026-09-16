@@ -14,7 +14,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -40,6 +39,11 @@ type SpawnedInfo struct {
 	StartedAt time.Time  `json:"started_at"`
 	Args      []string   `json:"args"`
 	ExitedAt  *time.Time `json:"exited_at,omitempty"`
+	// ExitError is the tail of the remote worker's captured output when it
+	// exited on its own with a non-zero status, so the console can show why a
+	// launch failed (e.g. a wrong-architecture binary, or a fatal dial error)
+	// instead of just "exited".
+	ExitError string `json:"exit_error,omitempty"`
 }
 
 // Config holds the SSH connection details and what to run on the node.
@@ -145,8 +149,11 @@ func (m *Manager) Spawn(host string, capacity, batch int) (SpawnedInfo, error) {
 		client.Close()
 		return SpawnedInfo{}, fmt.Errorf("sshrun: open session on %s: %w", host, err)
 	}
-	sess.Stdout = io.Discard
-	sess.Stderr = io.Discard
+	tail := newTailbuf(8 << 10)
+	// Capture the remote process's output so a failed launch (exec format
+	// error, fatal dial, ...) surfaces in the console instead of a bare exit.
+	sess.Stdout = tail
+	sess.Stderr = tail
 
 	args := []string{
 		"--controller", m.cfg.CtrlAddr,
@@ -182,16 +189,31 @@ func (m *Manager) Spawn(host string, capacity, batch int) (SpawnedInfo, error) {
 	m.mu.Unlock()
 
 	go func() {
-		_ = sess.Wait()
+		werr := sess.Wait()
 		sess.Close()
 		client.Close()
+		exited := ""
 		m.mu.Lock()
 		if cur, ok := m.wrks[id]; ok && cur.sess == sess {
 			now := time.Now()
 			cur.info.Alive = false
 			cur.info.ExitedAt = &now
+			if werr != nil {
+				// exited on its own with a non-zero status: keep the captured
+				// output as the reason. Entries stopped deliberately are removed
+				// from m.wrks before close(), so they never land here.
+				if out := tail.Bytes(); len(out) > 0 {
+					cur.info.ExitError = string(out)
+				} else {
+					cur.info.ExitError = werr.Error()
+				}
+				exited = cur.info.ExitError
+			}
 		}
 		m.mu.Unlock()
+		if exited != "" {
+			logf("sshrun: worker %s on %s exited: %s", id, host, exited)
+		}
 		logf("sshrun: worker %s on %s exited", id, host)
 	}()
 	logf("sshrun: spawned worker %s on host %s", id, host)
@@ -423,4 +445,47 @@ func (m *Manager) logf(format string, args ...any) {
 // shq single-quotes a remote shell token.
 func shq(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// tailbuf keeps only the last max bytes written to it, so a long-lived worker's
+// streaming output never accumulates past a bounded size while still preserving
+// the end of what it printed before it died.
+type tailbuf struct {
+	mu   sync.Mutex
+	buf  []byte
+	max  int
+	drop int
+}
+
+func newTailbuf(max int) *tailbuf {
+	return &tailbuf{buf: make([]byte, 0, max), max: max}
+}
+
+func (t *tailbuf) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(p) >= t.max {
+		t.buf = append(t.buf[:0], p[len(p)-t.max:]...)
+		t.drop += len(p) - t.max
+		return len(p), nil
+	}
+	if over := len(t.buf) + len(p) - t.max; over > 0 {
+		t.buf = t.buf[over:]
+		t.drop += over
+	}
+	t.buf = append(t.buf, p...)
+	return len(p), nil
+}
+
+// Bytes returns the retained tail, prefixed with a truncation marker if bytes
+// were dropped.
+func (t *tailbuf) Bytes() []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	const marker = "...(earlier output omitted)\n"
+	out := make([]byte, 0, len(t.buf)+len(marker))
+	if t.drop > 0 {
+		out = append(out, marker...)
+	}
+	return append(out, t.buf...)
 }

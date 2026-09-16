@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -92,15 +91,22 @@ func (s *fakeSSHServer) handleConn(conn net.Conn) {
 
 // handleCommand multiplexes the tiny shell vocabulary the manager emits.
 func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
-	defer ch.Close()
+	// done signals still-running commands that the session is over, either
+	// because the client closed it (sess.Close / client.Close) or because the
+	// connection died. Commands run in goroutines so this loop stays live and
+	// can observe the closure of reqs.
+	done := make(chan struct{})
+	defer func() {
+		close(done)
+		ch.Close()
+	}()
 	for req := range reqs {
 		switch req.Type {
 		case "exec":
 			req.Reply(true, nil)
 			var payload struct{ Command string }
 			_ = ssh.Unmarshal(req.Payload, &payload)
-			runRemoteCommand(ch, payload.Command)
-			return
+			go runRemoteCommand(ch, payload.Command, done)
 		case "shell", "pty-req", "env":
 			req.Reply(true, nil)
 		default:
@@ -109,7 +115,11 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	}
 }
 
-func runRemoteCommand(ch ssh.Channel, cmd string) {
+func runRemoteCommand(ch ssh.Channel, cmd string, done <-chan struct{}) {
+	// Finished means the client must now observe channel close so its
+	// sess.Wait()/sess.Run() returns. Long-lived commands only reach here
+	// after done fires (session torn down).
+	defer ch.Close()
 	switch {
 	case strings.HasPrefix(cmd, "mkdir") && strings.Contains(cmd, "cat >"):
 		// upload: read the whole payload from the channel as the file body
@@ -138,46 +148,115 @@ func runRemoteCommand(ch ssh.Channel, cmd string) {
 		}
 		finish(ch)
 	default:
-		// worker run: re-exec the test binary as a helper that blocks until
-		// the channel (stdin) closes, then exit.
-		cmd := exec.Command(os.Args[0], "-sshrun-helper")
+		// Re-exec ourselves as the remote worker binary. To avoid a deadlock
+		// if the child exits on its own (startup failure), stdin must be a
+		// real *os.File handed to exec.Command: with an io.Reader, exec spawns
+		// a stdin copy goroutine that cmd.Wait() blocks on until the write end
+		// is closed, and on the failure path nothing ever closes it.
+		cmd := exec.Command(os.Args[0], "-test.run=TestSSHRunHelperChild", "--")
 		cmd.Env = append(os.Environ(), "SSHRUN_HELPER=1")
-		pr, pw := io.Pipe()
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			finish(ch)
+			return
+		}
 		cmd.Stdin = pr
 		cmd.Stdout = ch
 		cmd.Stderr = ch
 		if err := cmd.Start(); err != nil {
+			pw.Close()
+			pr.Close()
 			finish(ch)
 			return
 		}
-		var wg sync.WaitGroup
-		wg.Add(1)
+		pr.Close()
+		// Keep the child's stdin open while the session lives; closing it on
+		// teardown makes the helper child see EOF and exit cleanly.
 		go func() {
-			defer wg.Done()
-			_, _ = io.Copy(pw, ch)
+			<-done
 			_ = pw.Close()
 		}()
-		_ = cmd.Wait()
-		wg.Wait()
+		werr := cmd.Wait()
+		_ = pw.Close()
+		if ee, ok := werr.(*exec.ExitError); ok && ee.ExitCode() != 0 {
+			finishStatus(ch, uint32(ee.ExitCode()))
+			return
+		}
 		finish(ch)
+		return
 	}
 }
 
 func finish(ch ssh.Channel) {
-	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+	finishStatus(ch, 0)
+}
+
+func finishStatus(ch ssh.Channel, status uint32) {
+	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
 }
 
 // TestSSHRunHelperChild is the re-exec'd helper: stay alive while stdin is
-// open (the manager keeps the session open while the worker "runs").
+// open (the manager keeps the session open while the worker "runs"), or fail
+// immediately with a message on stderr when SSHRUN_HELPER_OUT is set (simulating
+// a remote worker that crashes at startup, e.g. an exec format error).
 func TestSSHRunHelperChild(t *testing.T) {
 	if os.Getenv("SSHRUN_HELPER") != "1" {
 		return
+	}
+	if out := os.Getenv("SSHRUN_HELPER_OUT"); out != "" {
+		fmt.Fprintln(os.Stderr, out)
+		os.Exit(1)
 	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	os.Exit(0)
 }
 
+// TestRemoteSpawnCapturesStartupFailure verifies that when a remotely spawned
+// worker exits on its own with a non-zero status, the tail of its output is
+// kept on the spawned entry so the console can show why it died.
+func TestRemoteSpawnCapturesStartupFailure(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "da_worker")
+	if err := os.WriteFile(bin, []byte("fake-da-worker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := startFakeSSH(t, "pw")
+	// Make the re-exec'd helper write a message to stderr and exit non-zero,
+	// mimicking a remote binary that cannot start on the node.
+	t.Setenv("SSHRUN_HELPER_OUT", "cannot execute binary file: Exec format error")
+	m := sshrun.NewManager(sshrun.Config{
+		User:        "u",
+		Port:        srv.port(),
+		Password:    "pw",
+		WorkerBin:   bin,
+		CtrlAddr:    "145.129.0.23:50051",
+		RemoteDir:   filepath.Join(t.TempDir(), "datantsadv"),
+		IdlePoll:    3 * time.Second,
+		DialTimeout: 5 * time.Second,
+	})
+
+	info, err := m.Spawn("127.0.0.1", 8, 64)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		cur, ok := m.Info(info.ID)
+		if ok && !cur.Alive && cur.ExitedAt != nil {
+			if !strings.Contains(cur.ExitError, "Exec format error") {
+				t.Fatalf("exit_error = %q, want the helper's message", cur.ExitError)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("worker did not transition to exited within timeout")
+}
+
 func TestRemoteSpawnStop(t *testing.T) {
+	// Ensure the env var from a prior test doesn't leak into re-exec'd helpers.
+	os.Unsetenv("SSHRUN_HELPER_OUT")
 	local := t.TempDir()
 	bin := filepath.Join(local, "da_worker")
 	if err := os.WriteFile(bin, []byte("fake-da-worker"), 0o755); err != nil {
@@ -222,8 +301,9 @@ func TestRemoteSpawnStop(t *testing.T) {
 		t.Fatalf("snapshot = %d", got)
 	}
 	time.Sleep(100 * time.Millisecond) // a moment for the helpers to start
-	if alive, _ := m.Info(info.ID); !alive.Alive {
-		t.Fatal("worker 01 should still be alive")
+	cur, ok := m.Info(info.ID)
+	if !ok || !cur.Alive {
+		t.Fatalf("worker 01 should still be alive: info=%+v ok=%v", cur, ok)
 	}
 
 	n, err := m.StopHost("127.0.0.1")

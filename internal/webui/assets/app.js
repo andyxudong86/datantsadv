@@ -273,10 +273,12 @@
     if (!sp || !sp.length) { box.innerHTML = '<div class="muted">\u6ca1\u6709\u7531\u63a7\u5236\u673a\u62c9\u8d77\u7684 Worker\u3002</div>'; return; }
     box.innerHTML = sp.map(function (s) {
       var where = s.remote ? "\u8282\u70b9 " + esc(s.host) : s.alive ? "\u5b58\u6d3b pid " + esc(s.pid) : "\u5df2\u9000\u51fa";
+      var reason = (!s.alive && s.exit_error) ? '<div class="w-meta error">' + esc(s.exit_error) + "</div>" : "";
       return '<div class="worker-card">' +
         '<div class="w-id">' + esc(s.id) + " " + badge(s.alive ? "running" : "idle", s.alive ? (s.remote ? "\u8fdc\u7a0b\u5c31\u7eea" : "\u5b58\u6d3b pid " + esc(s.pid)) : "\u5df2\u9000\u51fa") + "</div>" +
         '<div class="w-meta">' + where + " \u00b7 \u542f\u52a8 " + fmtTime(s.started_at) + "</div>" +
         '<div class="w-meta">' + (s.args || []).join(" ") + "</div>" +
+        reason +
         '<button class="ghost spawn-stop" data-id="' + esc(s.id) + '"' + (s.alive ? "" : " disabled") + ">\u505c\u6b62</button>" +
         "</div>";
     }).join("");
