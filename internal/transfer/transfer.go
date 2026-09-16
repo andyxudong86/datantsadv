@@ -54,17 +54,17 @@ type TaskResult struct {
 
 // Pool is a bounded set of copier workers processing a stream of tasks.
 type Pool struct {
-	cfg       Config
-	limiter   *throttle.Limiter
-	work      chan plan.Task
-	results   chan TaskResult
-	wg        sync.WaitGroup // copier workers
-	consumer  sync.WaitGroup // result consumer
-	bufPool   sync.Pool
-	copied    atomic.Int64
-	failed    atomic.Int64
-	cbMu      sync.Mutex
-	cb        func(TaskResult)
+	cfg      Config
+	limiter  *throttle.Limiter
+	work     chan plan.Task
+	results  chan TaskResult
+	wg       sync.WaitGroup // copier workers
+	consumer sync.WaitGroup // result consumer
+	bufPool  sync.Pool
+	copied   atomic.Int64
+	failed   atomic.Int64
+	cbMu     sync.Mutex
+	cb       func(TaskResult)
 }
 
 // NewPool creates a worker pool configured for the transfer.

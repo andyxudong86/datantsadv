@@ -67,6 +67,71 @@ func TestWorkerRetriesWhenControllerLate(t *testing.T) {
 	srv.Stop()
 }
 
+// TestWorkerStaysResidentUntilCancelled verifies the --idle-poll behaviour used
+// by console-launched workers: with nothing to do the worker must NOT exit, and
+// only a context cancellation (i.e. Stop) returns.
+func TestWorkerStaysResidentUntilCancelled(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	probe.Close()
+
+	ctl := newStaticController()
+	srv := grpc.NewServer()
+	migratev1.RegisterControlServer(srv, ctl)
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("controller listen: %v", err)
+	}
+	go srv.Serve(lis)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	conn, client, err := worker.DialControl(addr, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	w := worker.New(client, worker.Config{IdlePoll: 50 * time.Millisecond})
+	go func() { runErr <- w.Run(ctx) }()
+
+	// it must process at least the one hand-out batch...
+	waitFor(t, 5*time.Second, "first claim", func() bool { return ctl.claimed >= 1 })
+	// ...then stay resident instead of exiting even though the store is drained
+	time.Sleep(500 * time.Millisecond)
+	select {
+	case err := <-runErr:
+		t.Fatalf("resident worker exited early: %v", err)
+	default:
+	}
+
+	cancel()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("worker run after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not stop after cancel")
+	}
+	srv.Stop()
+}
+
+func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", desc)
+}
+
 type staticController struct {
 	migratev1.UnimplementedControlServer
 	mu      sync.Mutex

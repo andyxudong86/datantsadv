@@ -32,6 +32,7 @@ import (
 	"datants/internal/taskstore"
 	"datants/internal/webapi"
 	"datants/internal/webui"
+	"datants/internal/workerctl"
 )
 
 var _ = syscall.SIGTERM
@@ -55,6 +56,7 @@ func main() {
 	quiet := fs.Bool("quiet", false, "only print errors")
 	httpAddr := fs.String("http", "127.0.0.1:8080", "web console listen address (\"\" disables the console)")
 	webAuth := fs.String("web-auth", "", "optional HTTP basic auth for the console as user:pass")
+	workerBin := fs.String("worker-bin", "", "path to da_worker so the console can launch local worker processes (\"\" disables the feature)")
 	fs.Parse(os.Args[1:])
 
 	if *state == "" {
@@ -139,7 +141,40 @@ func main() {
 		}
 	}
 
-	webHandler := buildWebHandler(ctrl, webUser, webPass)
+	lis, err := net.Listen("tcp", *listen)
+	if err != nil {
+		logger.Fatalf("listen %s: %v", *listen, err)
+	}
+	if !*quiet {
+		logger.Printf("control listening on %s", *listen)
+	}
+
+	// Optional management of local worker processes from the web console.
+	var spawner *workerctl.Manager
+	var spawnCfg webapi.SpawnConfig
+	if *workerBin != "" {
+		if fi, err := os.Stat(*workerBin); err != nil || fi.IsDir() {
+			logger.Fatalf("--worker-bin %s: not a valid executable", *workerBin)
+		}
+		logDir := filepath.Join(*state, "workers")
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			logger.Fatalf("worker log dir: %v", err)
+		}
+		spawner = workerctl.NewManager(nil)
+		spawnCfg = webapi.SpawnConfig{
+			WorkerBin:      *workerBin,
+			ControllerAddr: localConnectAddr(lis.Addr().String()),
+			LogDir:         logDir,
+			// console-launched workers stay resident (idle-poll) so operators
+			// can bring them up before starting a run
+			IdlePoll: 3 * time.Second,
+		}
+		if !*quiet {
+			logger.Printf("console may launch local workers from bin=%s (thread to %s)", *workerBin, spawnCfg.ControllerAddr)
+		}
+	}
+
+	webHandler := buildWebHandler(ctrl, webUser, webPass, spawner, spawnCfg)
 	var httpSrv *http.Server
 	if *httpAddr != "" {
 		httpSrv = &http.Server{
@@ -157,16 +192,8 @@ func main() {
 		}
 	}
 
-	lis, err := net.Listen("tcp", *listen)
-	if err != nil {
-		logger.Fatalf("listen %s: %v", *listen, err)
-	}
 	grpcServer := grpc.NewServer()
 	ctrl.RegisterServer(grpcServer)
-
-	if !*quiet {
-		logger.Printf("control listening on %s", *listen)
-	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -174,6 +201,11 @@ func main() {
 		<-stop
 		if err := ctrl.StopRun(); err != nil && !*quiet {
 			logger.Printf("stop run: %v", err)
+		}
+		if spawner != nil {
+			if err := spawner.StopAll(); err != nil && !*quiet {
+				logger.Printf("stop spawned workers: %v", err)
+			}
 		}
 		if httpSrv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -198,12 +230,31 @@ func (m *multiFlag) Set(v string) error {
 
 // buildWebHandler assembles the web console: the webapi REST/SSE handlers
 // mounted behind the embedded SPA, wrapped in optional HTTP basic auth.
-func buildWebHandler(ctl *control.Controller, user, pass string) http.Handler {
-	h := webui.Handler(webapi.NewServer(ctl).Handler())
+func buildWebHandler(ctl *control.Controller, user, pass string, spawner *workerctl.Manager, spawnCfg webapi.SpawnConfig) http.Handler {
+	web := webapi.NewServer(
+		ctl,
+		webapi.WithWorkerSpawning(spawner, spawnCfg),
+	)
+	h := webui.Handler(web.Handler())
 	if user != "" {
 		h = basicAuth(user, pass, h)
 	}
 	return h
+}
+
+// localConnectAddr turns a bound listener address into the address a worker on
+// the same host should dial: wildcard hosts (0.0.0.0/[::]/empty) become
+// 127.0.0.1 while a concrete host is kept as-is.
+func localConnectAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // basicAuth guards h with HTTP Basic authentication against user:pass.

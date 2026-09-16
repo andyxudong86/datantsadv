@@ -43,6 +43,12 @@ type Config struct {
 	Rate int64
 	// HeartbeatInterval controls liveness telemetry cadence.
 	HeartbeatInterval time.Duration
+	// IdlePoll, when > 0, keeps the worker resident after the store drains (or
+	// while no run is active), polling for work at this cadence instead of
+	// exiting. Zero retains the legacy behaviour: exit when there is nothing
+	// left to do. Console-launched workers set this so a worker spawned before
+	// (or after) a run stays online for future runs.
+	IdlePoll time.Duration
 	// PreserveOwner applies the tasks' uid/gid on copy and meta update.
 	PreserveOwner bool
 }
@@ -126,7 +132,14 @@ func (w *Worker) Run(ctx context.Context) error {
 			return err
 		}
 		if !proceed {
-			break // no more tasks; migration complete
+			if w.cfg.IdlePoll <= 0 {
+				break // no more tasks; migration complete
+			}
+			// idle: stay resident (console-launched workers) and poll again
+			if !backoff(ctx, w.cfg.IdlePoll, w.cfg.IdlePoll) {
+				break
+			}
+			continue
 		}
 	}
 	hbCancel()

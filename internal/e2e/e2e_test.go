@@ -67,6 +67,31 @@ func getJSON(t *testing.T, url string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+func postJSON(t *testing.T, url string, body any, want int) ([]byte, int) {
+	t.Helper()
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if want >= 0 && resp.StatusCode != want {
+		t.Fatalf("POST %s = %d (want %d): %s", url, resp.StatusCode, want, tail(string(rb), 500))
+	}
+	return rb, resp.StatusCode
+}
+
 // waitFor polls fn until it reports ok or the deadline passes.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() (bool, error)) {
 	t.Helper()
@@ -404,7 +429,6 @@ func TestWebonlyStandbySmoke(t *testing.T) {
 	state := t.TempDir()
 	logs := t.TempDir()
 	ctlLog := filepath.Join(logs, "control.log")
-	workerLog := filepath.Join(logs, "worker.log")
 
 	mustWrite(t, filepath.Join(src, "note.txt"), "started from standby\n")
 	blob := make([]byte, 32<<10)
@@ -419,13 +443,15 @@ func TestWebonlyStandbySmoke(t *testing.T) {
 	httpPort := freePort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
 
-	// Standby mode: NO --src/--dst — the run must NOT start by itself.
+	// Standby mode: NO --src/--dst — the run must NOT start by itself. The
+	// console is allowed to launch local workers via --worker-bin.
 	startProc(t, controlBin, ctlLog,
 		"--state", state,
 		"--listen", fmt.Sprintf("127.0.0.1:%d", grpcPort),
 		"--http", fmt.Sprintf("127.0.0.1:%d", httpPort),
 		"--claim-timeout", "5s",
 		"--reclaim-interval", "500ms",
+		"--worker-bin", workerBin,
 		"--log", ctlLog,
 	)
 
@@ -460,14 +486,50 @@ func TestWebonlyStandbySmoke(t *testing.T) {
 		t.Fatalf("POST /api/start = %d, want 200 (a run already active?)", resp.StatusCode)
 	}
 
-	startProc(t, workerBin, workerLog,
-		"--controller", fmt.Sprintf("127.0.0.1:%d", grpcPort),
-		"--id", "e2e-w2",
-		"--capacity", "4",
-		"--batch", "8",
-		"--heartbeat", "1s",
-		"--log", workerLog,
+	// Worker comes up through the CONSOLE, not the shell: the control process
+	// spawns da_worker as a child (—worker-bin).
+	postJSON(t, base+"/api/workers/spawn",
+		map[string]any{"count": 1, "capacity": 4, "batch": 8, "id_prefix": "guispawn"},
+		http.StatusOK,
 	)
+	spawnedWorker := "guispawn-00"
+	t.Cleanup(func() {
+		// best-effort: never leave a managed worker running after the test even
+		// if the assertions above fail early.
+		postJSON(t, base+"/api/workers/stop", map[string]any{"id": spawnedWorker}, -1)
+	})
+
+	// The spawned worker must register through gRPC and come online and the
+	// console must track it as a managed process.
+	waitFor(t, 20*time.Second, "console-spawned worker online", func() (bool, error) {
+		var out struct {
+			Workers []struct {
+				ID        string `json:"id"`
+				Connected bool   `json:"connected"`
+			} `json:"workers"`
+			Spawned []struct {
+				ID    string `json:"id"`
+				Alive bool   `json:"alive"`
+				PID   int    `json:"pid"`
+			} `json:"spawned"`
+		}
+		if err := getJSON(t, base+"/api/workers", &out); err != nil {
+			return false, err
+		}
+		registered := false
+		for _, w := range out.Workers {
+			if w.ID == spawnedWorker && w.Connected {
+				registered = true
+			}
+		}
+		managed := false
+		for _, sp := range out.Spawned {
+			if sp.ID == spawnedWorker && sp.Alive && sp.PID > 0 {
+				managed = true
+			}
+		}
+		return registered && managed, nil
+	})
 
 	var final statusResp
 	waitFor(t, 90*time.Second, "migration complete", func() (bool, error) {
@@ -507,8 +569,11 @@ func TestWebonlyStandbySmoke(t *testing.T) {
 		t.Errorf("history = %+v, want one done run", runs.Runs)
 	}
 
+	// The console can also shut the worker down again.
+	postJSON(t, base+"/api/workers/stop", map[string]any{"id": spawnedWorker}, http.StatusOK)
+
 	if t.Failed() {
 		dumpLog(t, ctlLog)
-		dumpLog(t, workerLog)
+		dumpLog(t, filepath.Join(state, "workers", spawnedWorker+".log"))
 	}
 }

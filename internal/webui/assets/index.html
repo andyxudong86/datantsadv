@@ -115,6 +115,23 @@
         </div>
         <div id="worker-list" class="worker-grid"></div>
       </div>
+
+      <div class="card">
+        <div class="card-title">本机启动 Worker
+          <span class="muted">（由控制机拉起 da_worker，需启动时指定 --worker-bin）</span>
+        </div>
+        <form id="spawnform" class="form">
+          <div class="row">
+            <label>台数<input id="sp-count" type="number" min="1" value="1"></label>
+            <label>并发<input id="sp-cap" type="number" min="1" value="4"></label>
+            <label>批次<input id="sp-batch" type="number" min="1" value="16"></label>
+            <label>前缀<input id="sp-prefix" value="local"></label>
+            <button id="sp-start" class="primary">启动</button>
+          </div>
+        </form>
+        <div id="spawn-err" class="error"></div>
+        <div id="spawn-list" class="worker-grid"></div>
+      </div>
     </section>
   </main>
 

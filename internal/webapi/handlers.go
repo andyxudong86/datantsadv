@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"datants/internal/control"
 	"datants/internal/taskstore"
+	"datants/internal/workerctl"
 )
 
 // abortError marks a clearly-bad request: it maps to 400 instead of 409.
@@ -86,7 +89,113 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	for _, w := range ws {
 		out = append(out, toWorkerDTO(w))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workers": out})
+	resp := map[string]any{"workers": out}
+	if s.spawner != nil {
+		resp["spawned"] = s.spawner.Snapshot()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// spawnLimits bound how many workers a single console command may launch.
+const (
+	maxSpawnPerRequest = 64
+	maxCapacity        = 1024
+)
+
+// spawnRequestDTO is the JSON body of POST /api/workers/spawn.
+type spawnRequestDTO struct {
+	Count    int    `json:"count"`
+	Capacity int    `json:"capacity"`
+	Batch    int    `json:"batch"`
+	IDPrefix string `json:"id_prefix"`
+}
+
+func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
+	if s.spawner == nil || s.spawnCfg.WorkerBin == "" {
+		writeErr(w, http.StatusBadRequest, "worker spawning is not enabled on this controller (--worker-bin)")
+		return
+	}
+	var req spawnRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.Count < 1 {
+		req.Count = 1
+	}
+	if req.Count > maxSpawnPerRequest {
+		writeErr(w, http.StatusBadRequest, "count exceeds limit "+strconv.Itoa(maxSpawnPerRequest))
+		return
+	}
+	if req.Capacity < 1 || req.Batch < 1 {
+		writeErr(w, http.StatusBadRequest, "capacity and batch must be >= 1")
+		return
+	}
+	if req.Capacity > maxCapacity {
+		writeErr(w, http.StatusBadRequest, "capacity exceeds limit "+strconv.Itoa(maxCapacity))
+		return
+	}
+	prefix := strings.TrimSpace(req.IDPrefix)
+	if prefix == "" {
+		prefix = "local"
+	}
+
+	spawned := make([]workerctl.SpawnedInfo, 0, req.Count)
+	for i := 0; i < req.Count; i++ {
+		id := fmt.Sprintf("%s-%02d", prefix, i)
+		logFile := filepath.Join(s.spawnCfg.LogDir, id+".log")
+		args := []string{
+			"--controller", s.spawnCfg.ControllerAddr,
+			"--id", id,
+			"--capacity", strconv.Itoa(req.Capacity),
+			"--batch", strconv.Itoa(req.Batch),
+			"--log", logFile,
+		}
+		if s.spawnCfg.IdlePoll > 0 {
+			// keep the worker resident so a worker spawned before a run (or
+			// waiting after one) stays online
+			args = append(args, "--idle-poll", s.spawnCfg.IdlePoll.String())
+		}
+		err := s.spawner.Spawn(id, s.spawnCfg.WorkerBin, args...)
+		if err != nil {
+			_ = s.spawner.StopAll()
+			writeErr(w, http.StatusInternalServerError, "failed to spawn worker "+id+": "+err.Error())
+			return
+		}
+		if info, ok := s.spawner.Info(id); ok {
+			s.logf("spawn worker %s pid=%d", id, info.PID)
+			spawned = append(spawned, info)
+		}
+	}
+	s.logf("spawn workers: count=%d prefix=%q capacity=%d batch=%d", req.Count, prefix, req.Capacity, req.Batch)
+	writeJSON(w, http.StatusOK, map[string]any{"spawned": spawned})
+}
+
+// stopWorkerRequestDTO is the JSON body of POST /api/workers/stop.
+type stopWorkerRequestDTO struct {
+	ID string `json:"id"`
+}
+
+func (s *Server) handleStopWorker(w http.ResponseWriter, r *http.Request) {
+	if s.spawner == nil {
+		writeErr(w, http.StatusBadRequest, "worker spawning is not enabled on this controller")
+		return
+	}
+	var req stopWorkerRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if err := s.spawner.Stop(req.ID); err != nil {
+		if err == workerctl.ErrNotSpawned {
+			writeErr(w, http.StatusNotFound, "no managed worker with id "+req.ID)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.logf("stopped managed worker %s", req.ID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {

@@ -31,6 +31,7 @@ func main() {
 	bufferSize := fs.Int("buffer-size", 1<<20, "IO buffer size in bytes")
 	rate := fs.Int64("rate", 0, "max bytes/second this worker writes (0 = unlimited)")
 	heartbeat := fs.Duration("heartbeat", 0, "heartbeat interval (default 10s)")
+	idlePoll := fs.Duration("idle-poll", 0, "keep the worker resident and poll at this cadence when there is no work (default 0: exit once the migration completes)")
 	syncMeta := fs.Bool("sync-meta", false, "preserve file owner (uid/gid) when copying new files (requires privileges); note: --delete-stale and delete/meta task generation are controller-side --sync-meta/--delete-stale flags")
 	logDest := fs.String("log", "", "log file (default /var/log/da_worker.log; \"-\" for stderr only)")
 	quiet := fs.Bool("quiet", false, "only print errors")
@@ -62,6 +63,7 @@ func main() {
 		BufferSize:        *bufferSize,
 		Rate:              *rate,
 		HeartbeatInterval: *heartbeat,
+		IdlePoll:          *idlePoll,
 		PreserveOwner:     *syncMeta,
 	})
 

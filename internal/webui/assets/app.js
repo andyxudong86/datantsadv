@@ -221,6 +221,19 @@
   $("#task-refresh").click();
 
   // ---- Workers ----
+  function renderSpawned(sp) {
+    var box = $("#spawn-list");
+    if (!sp || !sp.length) { box.innerHTML = '<div class="muted">没有由控制机拉起的 Worker。</div>'; return; }
+    box.innerHTML = sp.map(function (s) {
+      return '<div class="worker-card">' +
+        '<div class="w-id">' + esc(s.id) + " " + badge(s.alive ? "running" : "idle", s.alive ? "存活 pid " + esc(s.pid) : "已退出") + "</div>" +
+        '<div class="w-meta">启动 ' + fmtTime(s.started_at) + "</div>" +
+        '<div class="w-meta">' + (s.args || []).join(" ") + "</div>" +
+        '<button class="ghost spawn-stop" data-id="' + esc(s.id) + '"' + (s.alive ? "" : " disabled") + ">停止</button>" +
+        "</div>";
+    }).join("");
+  }
+
   function loadWorkers() {
     api("/api/workers").then(function (data) {
       var ws = data.workers || [];
@@ -235,12 +248,45 @@
           '<div class="w-meta">注册 ' + fmtTime(w.joined_at) + "</div>" +
           "</div>";
       }).join("");
+      renderSpawned(data.spawned);
     }).catch(function (err) {
       $("#worker-list").innerHTML = '<div class="error">' + esc(err.message) + "</div>";
     });
   }
   $("#worker-refresh").addEventListener("click", loadWorkers);
   $("#worker-refresh").click();
+
+  // 本机启动 / 停止 Worker
+  $("#spawnform").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var body = {
+      count: parseInt($("#sp-count").value, 10) || 1,
+      capacity: parseInt($("#sp-cap").value, 10) || 4,
+      batch: parseInt($("#sp-batch").value, 10) || 16,
+      id_prefix: $("#sp-prefix").value.trim() || "local"
+    };
+    $("#sp-start").disabled = true;
+    $("#spawn-err").textContent = "";
+    api("/api/workers/spawn", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+    }).then(function () { $("#sp-start").disabled = false; loadWorkers(); })
+      .catch(function (err) { $("#sp-start").disabled = false; $("#spawn-err").textContent = err.message; });
+  });
+
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest(".spawn-stop");
+    if (!b) return;
+    b.disabled = true;
+    var raw = { id: b.dataset.id };
+    api("/api/workers/stop", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(raw)
+    }).then(loadWorkers).catch(function (err) { alert(err.message); loadWorkers(); });
+  });
+
+  // Worker 页激活时每 5 秒刷新一次本机拉起状态
+  setInterval(function () {
+    if ($("#workers").classList.contains("active")) loadWorkers();
+  }, 5000);
 
   // 初始：先拉一发状态，再连 SSE
   api("/api/status").then(applyStatus).catch(function () { });

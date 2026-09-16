@@ -11,6 +11,7 @@ import (
 	"datants/internal/control"
 	"datants/internal/history"
 	"datants/internal/taskstore"
+	"datants/internal/webapi"
 )
 
 // testController builds a fresh controller over temp state for handler tests.
@@ -48,7 +49,7 @@ func get(h http.Handler, path string) *httptest.ResponseRecorder {
 }
 
 func TestBuildWebHandlerNoAuth(t *testing.T) {
-	h := buildWebHandler(testController(t), "", "")
+	h := buildWebHandler(testController(t), "", "", nil, webapi.SpawnConfig{})
 
 	// SPA shell served
 	rr := get(h, "/")
@@ -82,7 +83,7 @@ func TestBuildWebHandlerNoAuth(t *testing.T) {
 }
 
 func TestBuildWebHandlerBasicAuth(t *testing.T) {
-	h := buildWebHandler(testController(t), "admin", "s3cret")
+	h := buildWebHandler(testController(t), "admin", "s3cret", nil, webapi.SpawnConfig{})
 
 	// no credentials -> 401 with WWW-Authenticate
 	rr := get(h, "/")
@@ -129,5 +130,22 @@ func TestBasicAuthRequiredPass(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("empty pass code = %d", rr.Code)
+	}
+}
+
+func TestLocalConnectAddr(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"0.0.0.0:50051", "127.0.0.1:50051"},
+		{":50051", "127.0.0.1:50051"},
+		{"[::]:50051", "127.0.0.1:50051"},
+		{"127.0.0.1:50051", "127.0.0.1:50051"},
+		{"192.168.1.5:50051", "192.168.1.5:50051"},
+		{"localhost:50051", "localhost:50051"},
+		{"garbage", "garbage"},
+	}
+	for _, c := range cases {
+		if got := localConnectAddr(c.in); got != c.want {
+			t.Errorf("localConnectAddr(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

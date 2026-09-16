@@ -17,6 +17,7 @@ import (
 	"datants/internal/control"
 	"datants/internal/history"
 	"datants/internal/taskstore"
+	"datants/internal/workerctl"
 )
 
 // ControlService is the slice of the Controller the web layer needs. It is the
@@ -41,6 +42,23 @@ type Server struct {
 	log      *log.Logger
 	rate     *rateMeter
 	interval time.Duration // SSE refresh interval
+	spawner  *workerctl.Manager
+	spawnCfg SpawnConfig
+}
+
+// SpawnConfig holds what the control process needs to launch local da_worker
+// processes from the console.
+type SpawnConfig struct {
+	// WorkerBin is the path to the da_worker executable. Empty disables the
+	// spawn endpoints.
+	WorkerBin string
+	// ControllerAddr is the gRPC address workers dial, e.g. "127.0.0.1:50051".
+	ControllerAddr string
+	// LogDir receives per-worker logs as <LogDir>/<id>.log.
+	LogDir string
+	// IdlePoll keeps spawned workers resident between runs (0 disables the
+	// flag, letting them exit once the migration completes).
+	IdlePoll time.Duration
 }
 
 // Option configures a Server.
@@ -52,6 +70,14 @@ func WithLogger(l *log.Logger) Option { return func(s *Server) { s.log = l } }
 // WithRefreshInterval sets how often an SSE event is pushed. Default 1s.
 func WithRefreshInterval(d time.Duration) Option {
 	return func(s *Server) { s.interval = d }
+}
+
+// WithWorkerSpawning enables the console to launch local worker processes.
+func WithWorkerSpawning(m *workerctl.Manager, cfg SpawnConfig) Option {
+	return func(s *Server) {
+		s.spawner = m
+		s.spawnCfg = cfg
+	}
 }
 
 // NewServer builds the API server over a controller (or fake).
@@ -72,6 +98,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/workers", s.handleWorkers)
+	mux.HandleFunc("POST /api/workers/spawn", s.handleSpawn)
+	mux.HandleFunc("POST /api/workers/stop", s.handleStopWorker)
 	mux.HandleFunc("GET /api/tasks", s.handleTasks)
 	mux.HandleFunc("GET /api/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.handleRun)

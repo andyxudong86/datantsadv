@@ -177,11 +177,15 @@ curl -N -u admin:CHANGE-ME http://127.0.0.1:8080/api/events
 da_control \
   --state /var/lib/migrate --listen 0.0.0.0:50051 \
   --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME \
+  --worker-bin /usr/local/datants/da_worker \
   --log /var/log/da_control.log &
 
-# 每台 Worker（主动外连，无需开端口）
+# 每台 Worker（主动外连，无需开端口）。
+# ① 本机（控制机）worker：可在 Web 控制台 "Worker" 页一键拉起/停止（无需命令行）；
+# ② 其它机器 worker：
 da_worker --controller <控制机IP>:50051 --id workerA --capacity 8 --batch 64 \
   --log /var/log/da_worker.log &
+# ② 默认做完一整轮即退出；想保持常驻随时接活，加 --idle-poll 3s
 ```
 
 ### 4.2 Worker 上线验证

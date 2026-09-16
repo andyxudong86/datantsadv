@@ -19,7 +19,7 @@ import (
 type Record struct {
 	Path    string // full (absolute or as-scanned) path
 	Size    int64
-	ModTime int64 // unix seconds
+	ModTime int64  // unix seconds
 	Mode    uint32 // permission bits (and, on unix, type bits)
 	Uid     uint32 // owner uid; 0 if unavailable
 	Gid     uint32 // owner gid; 0 if unavailable

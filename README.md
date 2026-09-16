@@ -133,7 +133,7 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 >
 > 1. 只有控制机需要放行 50051（`firewall-cmd --permanent --add-port=50051/tcp && firewall-cmd --reload`）；Worker 是主动外连，不用开端口。
 > 2. 控制机启动初期在做扫描/入库，**还没开监听**，此时 Worker 报 `connection refused` 是正常的——新版 Worker 会自动指数退避重试，可先于控制机启动。
-> 3. `da_worker` 秒退/“finished”**不代表成功**。升级后的控制日志会打印 `progress: done=… failed=…` 与 `report: worker=… failed=…`，失败任务会在下次扫描自动重试。
+> 3. `da_worker` 秒退/“finished”代表着它把当前能领到的任务做完了（非报错）。升级后的控制日志会打印 `progress: done=… failed=…` 与 `report: worker=… failed=…`，失败任务会在下次扫描自动重试。想让 worker 常驻（做完也接着待命），加 `--idle-poll 3s`。
 > 4. 更换二进制后要 `pkill -f da_control; pkill -f da_worker` 杀干净旧进程再启动，否则行为不变。
 > 5. 想从零全量重跑：先 `rm -rf /var/lib/migrate/*` 清空任务库，再重启控制机。
 > 6. 任务库格式会在本次升级（新增 uid/gid 与 META/DELETE 任务）后变化：旧 `snapshot.dat`/`journal.log` 会被识别为不兼容并自动丢弃，**并且意味着全量重跑**。升级后首次启动相当于从零迁移。
@@ -145,7 +145,7 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 - **仪表盘**：实时进度、速率、失败数（SSE 推送）；暂停/续跑/停止/重扫按钮
 - **迁移历史**：每次运行的耗时、文件/字节、平均速率
 - **任务明细**：按状态筛选（默认只看失败，便于排查）
-- **Worker**：在线状态与各 Worker 累计完成量
+- **Worker**：在线状态与各 Worker 累计完成量；配合 `--worker-bin` 可在**控制机上直接拉起/停止本机 worker**（无需登服务器敲命令行）
 
 `da_control` 支持两种启动方式，推荐第 ① 种：
 
@@ -155,9 +155,14 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 ```sh
 nohup da_control \
   --state /var/lib/migrate --listen 0.0.0.0:50051 \
-  --http 0.0.0.0:8080 --web-auth admin:change-me &
+  --http 0.0.0.0:8080 --web-auth admin:change-me \
+  --worker-bin /usr/local/datants/da_worker &
 # 浏览器打开 http://<IP>:8080 → 填源/目标目录 → 点"开始迁移"
+# Worker 页可"本机启动 Worker"（台数/并发/批次）并在迁移前提前拉起，无需再 ssh 上去跑 da_worker
 ```
+
+> 控制机上的 worker 由控制进程拉起后**常驻空闲轮询**（`--idle-poll`），可在"开始迁移"之前先启动；Worker 页可随时"停止"。
+> 其它机器上的 worker 仍需命令行启动：`nohup da_worker --controller <IP>:50051 --id workerA &`（默认做完一整轮即退出；若也想像控制机拉起的那样常驻，加 `--idle-poll 3s`）。
 
 **② 传统模式（启动即开跑，systemd/脚本友好）**——带上 `--src/--dst`，控制机一启动就自动开始第一次迁移：
 
@@ -194,6 +199,8 @@ nohup da_control --src /mnt/source --dst /mnt/destination \
 | `--log`                | 自动      | 日志文件（默认 `/var/log/da_<进程>.log`；`--log -` 仅输出到 stderr） |
 | `--http`               | `127.0.0.1:8080` | Web 控制台监听地址（`da_control` 专属；空串关闭控制台） |
 | `--web-auth`           | -         | Web 控制台 HTTP Basic 认证，格式 `user:pass`（`da_control` 专属） |
+| `--worker-bin`         | -         | 本机 `da_worker` 可执行文件路径；设置后在 Web 控制台 **Worker 页可一键拉起/停止本机 worker**（`da_control` 专属，空串禁用该功能） |
+| `--idle-poll`          | `0`       | 空闲轮询间隔：>0 时 worker 做完也没任务后**常驻不退出**并持续取任务（可先于迁移启动）；`0` 保持"做完即退出"（`da_worker` 专属） |
 
 > **`--sync-meta` / `--delete-stale` 是控制机扫描参数**（`da_migrate` 也有）：它们决定扫描时生成哪些增量任务。
 >
