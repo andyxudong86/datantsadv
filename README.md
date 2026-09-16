@@ -140,18 +140,35 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 
 ### 5.1 Web 控制台（可选）
 
-`da_control` 内嵌一个**无依赖的 Web 控制台**（原生 JS，无需 Node/构建，离线可用）监听在 `http://127.0.0.1:8080`：
+`da_control` 内嵌一个**无依赖的 Web 控制台**（原生 JS，无需 Node/构建，离线可用）：
 
 - **仪表盘**：实时进度、速率、失败数（SSE 推送）；暂停/续跑/停止/重扫按钮
 - **迁移历史**：每次运行的耗时、文件/字节、平均速率
 - **任务明细**：按状态筛选（默认只看失败，便于排查）
 - **Worker**：在线状态与各 Worker 累计完成量
 
+`da_control` 支持两种启动方式，推荐第 ① 种：
+
+**① 待命模式（推荐，GUI 全程控制）**——不带 `--src/--dst`，控制机只起 gRPC + Web，
+迁移由控制台"启动迁移"表单（或 `POST /api/start`）发起，源/目标、并发、忽略列表等都在界面上填：
+
+```sh
+nohup da_control \
+  --state /var/lib/migrate --listen 0.0.0.0:50051 \
+  --http 0.0.0.0:8080 --web-auth admin:change-me &
+# 浏览器打开 http://<IP>:8080 → 填源/目标目录 → 点"开始迁移"
+```
+
+**② 传统模式（启动即开跑，systemd/脚本友好）**——带上 `--src/--dst`，控制机一启动就自动开始第一次迁移：
+
 ```sh
 nohup da_control --src /mnt/source --dst /mnt/destination \
   --listen 0.0.0.0:50051 --state /var/lib/migrate \
   --http 0.0.0.0:8080 --web-auth admin:change-me &
 ```
+
+> `--src/--dst` 必须成对出现（只给一个会报错）；两个都不给即待命模式。
+> 已开跑的迁移不可重复启动（GUI 会禁用"开始"按钮、API 返回 409）；待其完成后（状态回到空闲）才能发起下一次。
 
 在生产环境请务必：
 
@@ -165,8 +182,8 @@ nohup da_control --src /mnt/source --dst /mnt/destination \
 
 | 参数             | 默认            | 说明 |
 |------------------|-----------------|------|
-| `--src`          | 必填            | 源根目录（可为 NFS 挂载点） |
-| `--dst`          | 必填            | 目标根目录（可为 NFS 挂载点） |
+| `--src`          | -               | 源根目录（可为 NFS 挂载点）。da_migrate 必填；da_control 可选——提供则启动即自动开跑，与 `--dst` 一起省略则进入待命模式（只起 gRPC + Web，由 Web/API 发起迁移） |
+| `--dst`          | -               | 目标根目录（可为 NFS 挂载点）。规则同 `--src`，必须成对出现 |
 | `--workers`      | `GOMAXPROCS`    | 并发复制数 |
 | `--rate`         | `0` 不限速      | 每秒最大写入字节数 |
 | `--retries`      | `3`             | 单文件失败重试次数 |

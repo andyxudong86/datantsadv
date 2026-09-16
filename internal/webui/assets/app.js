@@ -87,10 +87,13 @@
       $("#btn-resume").disabled = d.state !== "paused";
       $("#btn-stop").disabled = d.state === "idle";
       $("#btn-rescan").disabled = d.state === "idle" || (run && !run.scan_done);
+      // 已有活动迁移时不允许再点“开始”，避免撞“任务已存在”
+      $("#btn-start").disabled = true;
     } else {
       $("#run-detail").textContent = "当前没有活动迁移。";
       $("#btn-pause").disabled = $("#btn-resume").disabled = true;
       $("#btn-stop").disabled = $("#btn-rescan").disabled = true;
+      $("#btn-start").disabled = false;
       $("#progress-bar").style.width = "0%";
     }
   }

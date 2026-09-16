@@ -1,4 +1,4 @@
-// Command da_control runs the Controller of the distributed migration tool: it
+﻿// Command da_control runs the Controller of the distributed migration tool: it
 // scans the source tree, diffs against the destination, ingests the resulting
 // file-level tasks into a persistent store, and serves the gRPC control plane
 // that Workers use to claim and report tasks. It also serves the embedded web
@@ -57,11 +57,20 @@ func main() {
 	webAuth := fs.String("web-auth", "", "optional HTTP basic auth for the console as user:pass")
 	fs.Parse(os.Args[1:])
 
-	if *src == "" || *dst == "" || *state == "" {
-		fmt.Fprintln(os.Stderr, "error: --src, --dst and --state are required")
+	if *state == "" {
+		fmt.Fprintln(os.Stderr, "error: --state is required")
 		fs.Usage()
 		os.Exit(2)
 	}
+	if (*src == "") != (*dst == "") {
+		fmt.Fprintln(os.Stderr, "error: --src and --dst must be provided together; omit both to start in web-only standby mode")
+		fs.Usage()
+		os.Exit(2)
+	}
+	// Legacy mode: with --src/--dst the first run starts automatically at boot
+	// (systemd/script friendly). Without them da_control stands by and runs are
+	// started from the web console / POST /api/start.
+	autoStart := *src != "" && *dst != ""
 	if *workers <= 0 {
 		*workers = runtime.GOMAXPROCS(0)
 	}
@@ -96,23 +105,27 @@ func main() {
 		History:         hist,
 	})
 
-	// scan + ingest (incremental: only changed entries become tasks)
-	if !*quiet {
-		logger.Printf("starting run: %s -> %s", srcAbs, dstAbs)
-	}
-	runID, err := ctrl.StartRun(srcAbs, dstAbs, control.RunConfig{
-		Workers:     *workers,
-		IncludeDirs: *includeDirs,
-		Ignore:      ignore,
-		SyncMeta:    *syncMeta,
-		DeleteStale: *deleteStale,
-	})
-	if err != nil {
-		store.Done()
-		logger.Fatalf("start run: %v", err)
-	}
-	if !*quiet {
-		logger.Printf("run %s started", runID)
+	if autoStart {
+		// scan + ingest (incremental: only changed entries become tasks)
+		if !*quiet {
+			logger.Printf("starting run: %s -> %s", srcAbs, dstAbs)
+		}
+		runID, err := ctrl.StartRun(srcAbs, dstAbs, control.RunConfig{
+			Workers:     *workers,
+			IncludeDirs: *includeDirs,
+			Ignore:      ignore,
+			SyncMeta:    *syncMeta,
+			DeleteStale: *deleteStale,
+		})
+		if err != nil {
+			store.Done()
+			logger.Fatalf("start run: %v", err)
+		}
+		if !*quiet {
+			logger.Printf("run %s started", runID)
+		}
+	} else if !*quiet {
+		logger.Printf("standby mode: no --src/--dst, awaiting run start from web console or API")
 	}
 
 	ctrl.Start()

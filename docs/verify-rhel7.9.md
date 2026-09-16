@@ -109,16 +109,18 @@ test ! -e $BASE/dst/stale.txt && echo "STALE REMOVED"   # 应输出 STALE REMOVE
 
 控制台内嵌在 `da_control` 中（无 Node/Java 依赖，浏览器打开即可）。它复用第 4 节的分布式启动方式；**推荐与分布式一起验证**。
 
-### 3.1 启动（含 Web 认证，强烈建议生产开启）
+### 3.1 启动（推荐待命模式：迁移由 GUI 发起）
+
+控制机不带 `--src/--dst` 启动，只起 gRPC + Web 控制台；在浏览器"启动迁移"表单里填源/目标目录后开跑（`--src/--dst` 必须成对出现，都不给 = 待命）：
 
 ```bash
 da_control \
-  --src /mnt/source --dst /mnt/destination \
-  --listen 0.0.0.0:50051 --state /var/lib/migrate \
-  --include-empty-dirs \
+  --state /var/lib/migrate --listen 0.0.0.0:50051 \
   --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME \
   --log -
 ```
+
+传统模式（带 `--src/--dst`）则启动即自动开跑，适合 systemd/脚本一键拉活。
 
 ### 3.2 用 curl 冒烟（不需要浏览器）
 
@@ -169,11 +171,12 @@ curl -N -u admin:CHANGE-ME http://127.0.0.1:8080/api/events
 ### 4.1 启动顺序
 
 ```bash
-# 控制机（先启动；扫描/入库阶段尚未开监听，worker 稍后自己重试也能连上）
+# 控制机（先启动；扫描/入库阶段尚未开监听，worker 稍后自己重试也能连上）。
+# 推荐待命模式：不带 --src/--dst，首次迁移在 Web 控制台发起；
+# 若带 --src/--dst 则启动即自动开跑。
 da_control \
-  --src /mnt/source --dst /mnt/destination \
-  --listen 0.0.0.0:50051 --state /var/lib/migrate \
-  --include-empty-dirs --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME \
+  --state /var/lib/migrate --listen 0.0.0.0:50051 \
+  --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME \
   --log /var/log/da_control.log &
 
 # 每台 Worker（主动外连，无需开端口）
@@ -253,7 +256,8 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/datants/da_control --src /mnt/source --dst /mnt/destination --state /var/lib/migrate --listen 0.0.0.0:50051 --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME
+# 待命模式：迁移在 Web 控制台发起；如需开机即迁移可补上 --src/--dst
+ExecStart=/usr/local/datants/da_control --state /var/lib/migrate --listen 0.0.0.0:50051 --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME
 Restart=on-failure
 RestartSec=3
 

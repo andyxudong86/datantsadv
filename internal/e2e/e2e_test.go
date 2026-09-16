@@ -389,3 +389,126 @@ func TestDistributedBinarySmoke(t *testing.T) {
 		dumpLog(t, workerLog)
 	}
 }
+
+func TestWebonlyStandbySmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("binary smoke test skipped in -short mode")
+	}
+
+	binDir := t.TempDir()
+	controlBin := goBuild(t, filepath.Join(binDir, "da_control"), "datants/cmd/da_control")
+	workerBin := goBuild(t, filepath.Join(binDir, "da_worker"), "datants/cmd/da_worker")
+
+	src := t.TempDir()
+	dst := t.TempDir()
+	state := t.TempDir()
+	logs := t.TempDir()
+	ctlLog := filepath.Join(logs, "control.log")
+	workerLog := filepath.Join(logs, "worker.log")
+
+	mustWrite(t, filepath.Join(src, "note.txt"), "started from standby\n")
+	blob := make([]byte, 32<<10)
+	for i := range blob {
+		blob[i] = byte(i % 251)
+	}
+	if err := os.WriteFile(filepath.Join(src, "big"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	grpcPort := freePort(t)
+	httpPort := freePort(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
+
+	// Standby mode: NO --src/--dst — the run must NOT start by itself.
+	startProc(t, controlBin, ctlLog,
+		"--state", state,
+		"--listen", fmt.Sprintf("127.0.0.1:%d", grpcPort),
+		"--http", fmt.Sprintf("127.0.0.1:%d", httpPort),
+		"--claim-timeout", "5s",
+		"--reclaim-interval", "500ms",
+		"--log", ctlLog,
+	)
+
+	waitFor(t, 20*time.Second, "web console", func() (bool, error) {
+		req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+		if err != nil {
+			return false, err
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode == http.StatusOK && bytes.Contains(body, []byte("DataNTs 迁移控制台")), nil
+	})
+
+	// POST /api/start must succeed with a 200 — it would 409 if da_control had
+	// auto-started a run at boot, so this proves standby mode.
+	body, _ := json.Marshal(map[string]any{
+		"src":       src,
+		"dst":       dst,
+		"workers":   2,
+		"fresh":     true,
+		"sync_meta": false,
+	})
+	resp, err := http.Post(base+"/api/start", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /api/start: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/start = %d, want 200 (a run already active?)", resp.StatusCode)
+	}
+
+	startProc(t, workerBin, workerLog,
+		"--controller", fmt.Sprintf("127.0.0.1:%d", grpcPort),
+		"--id", "e2e-w2",
+		"--capacity", "4",
+		"--batch", "8",
+		"--heartbeat", "1s",
+		"--log", workerLog,
+	)
+
+	var final statusResp
+	waitFor(t, 90*time.Second, "migration complete", func() (bool, error) {
+		st := statusResp{}
+		if err := getJSON(t, base+"/api/status", &st); err != nil {
+			return false, err
+		}
+		if st.State == "running" {
+			return false, nil
+		}
+		if st.State == "idle" && st.Tasks.Done > 0 &&
+			st.Tasks.Done == st.Tasks.Total && st.Tasks.Failed == 0 {
+			final = st
+			return true, nil
+		}
+		return false, fmt.Errorf("state=%s tasks=%+v", st.State, st.Tasks)
+	})
+	t.Logf("standby run: total=%d done=%d failed=%d",
+		final.Tasks.Total, final.Tasks.Done, final.Tasks.Failed)
+
+	if got, err := os.ReadFile(filepath.Join(dst, "note.txt")); err != nil || string(got) != "started from standby\n" {
+		t.Errorf("dst/note.txt = %q, err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "big")); err != nil || !bytes.Equal(got, blob) {
+		t.Errorf("dst/big mismatch (err=%v, %d bytes)", err, len(got))
+	}
+
+	var runs struct {
+		Runs []struct {
+			Status string `json:"status"`
+		} `json:"runs"`
+	}
+	if err := getJSON(t, base+"/api/runs", &runs); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs.Runs) != 1 || runs.Runs[0].Status != "done" {
+		t.Errorf("history = %+v, want one done run", runs.Runs)
+	}
+
+	if t.Failed() {
+		dumpLog(t, ctlLog)
+		dumpLog(t, workerLog)
+	}
+}
