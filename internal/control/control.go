@@ -142,6 +142,17 @@ func (c *Controller) IngestTasks(tasks []taskstore.Task) error {
 	return c.store.Ingest(tasks)
 }
 
+// SetIdle puts the controller into the no-run state, so claiming workers get
+// an empty batch until a run is started. da_control boots web-only standby with
+// this: without it leftover tasks from a previous process (a stopped run's
+// pending store entries) would be eligible again, letting a freshly registered
+// worker copy them out of band. StartRun flips the state back to running.
+func (c *Controller) SetIdle() {
+	c.mu.Lock()
+	c.runState = RunIdle
+	c.mu.Unlock()
+}
+
 // Start launches the background stale-claim reclaimer and (when a logger is
 // configured) a periodic progress reporter. Call Stop to shut down.
 func (c *Controller) Start() {

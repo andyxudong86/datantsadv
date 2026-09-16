@@ -114,11 +114,13 @@ test ! -e $BASE/dst/stale.txt && echo "STALE REMOVED"   # 应输出 STALE REMOVE
 控制机不带 `--src/--dst` 启动，只起 gRPC + Web 控制台；在浏览器"启动迁移"表单里填源/目标目录后开跑（`--src/--dst` 必须成对出现，都不给 = 待命）：
 
 ```bash
-da_control \
+nohup /usr/local/datantsadv/da_control \
   --state /var/lib/migrate --listen 0.0.0.0:50051 \
   --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME \
-  --log -
+  --worker-bin /usr/local/datantsadv/da_worker &
 ```
+
+> **待命重启不会自动重跑上次任务**：状态目录里残留的上一轮（被停止/未完成）任务在待命重启后保持冻结，此时即便在"Worker"页拉起本机 Worker 也只轮询不搬运；必须先在控制台/API 新发起一次迁移，Worker 才会领任务。
 
 传统模式（带 `--src/--dst`）则启动即自动开跑，适合 systemd/脚本一键拉活。
 

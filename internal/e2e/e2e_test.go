@@ -580,3 +580,143 @@ func TestWebonlyStandbySmoke(t *testing.T) {
 		dumpLog(t, filepath.Join(state, "workers", spawnedWorker+".log"))
 	}
 }
+
+// TestStandbyDoesNotRunLeftoverTasks is the regression for "I booted da_control
+// in standby, pressed 'launch worker' on the Workers page, and it started
+// copying the run I committed and stopped last time". A leftover task store
+// from a stopped run must stay frozen until a NEW run is started via the
+// console/API.
+func TestStandbyDoesNotRunLeftoverTasks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("binary smoke test skipped in -short mode")
+	}
+
+	binDir := t.TempDir()
+	controlBin := goBuild(t, filepath.Join(binDir, "da_control"), "datants/cmd/da_control")
+	workerBin := goBuild(t, filepath.Join(binDir, "da_worker"), "datants/cmd/da_worker")
+
+	src := t.TempDir()
+	dst := t.TempDir()
+	state := t.TempDir()
+	logs := t.TempDir()
+	ctlLog1 := filepath.Join(logs, "control1.log")
+	ctlLog2 := filepath.Join(logs, "control2.log")
+
+	for i := 0; i < 4; i++ {
+		mustWrite(t, filepath.Join(src, fmt.Sprintf("f%d.txt", i)), fmt.Sprintf("leftover-%d\n", i))
+	}
+
+	// --- pass 1: autostart mode fills the store, then the run is stopped ---
+	g1 := freePort(t)
+	h1 := freePort(t)
+	base1 := fmt.Sprintf("http://127.0.0.1:%d", h1)
+	p1 := startProc(t, controlBin, ctlLog1,
+		"--src", src,
+		"--dst", dst,
+		"--state", state,
+		"--listen", fmt.Sprintf("127.0.0.1:%d", g1),
+		"--http", fmt.Sprintf("127.0.0.1:%d", h1),
+		"--claim-timeout", "5s",
+		"--reclaim-interval", "500ms",
+		"--log", ctlLog1,
+	)
+
+	waitFor(t, 20*time.Second, "first console", func() (bool, error) {
+		var st statusResp
+		if err := getJSON(t, base1+"/api/status", &st); err != nil {
+			return false, err
+		}
+		return st.Tasks.Total >= 4, nil
+	})
+	postJSON(t, base1+"/api/stop", map[string]any{}, http.StatusOK)
+	// fully retire the first process so the standby reboot below is the only
+	// owner of the state dir (mirrors a real da_control restart)
+	p1.kill()
+
+	// --- pass 2: STANDBY reboot on the same state dir ---
+	g2 := freePort(t)
+	h2 := freePort(t)
+	base2 := fmt.Sprintf("http://127.0.0.1:%d", h2)
+	startProc(t, controlBin, ctlLog2,
+		"--state", state,
+		"--listen", fmt.Sprintf("127.0.0.1:%d", g2),
+		"--http", fmt.Sprintf("127.0.0.1:%d", h2),
+		"--worker-bin", workerBin,
+		"--log", ctlLog2,
+	)
+	// no p2 var + kill here: startProc's t.Cleanup owns the process, and
+	// cleanups run after the spawned-worker stop below (reverse registration)
+
+	waitFor(t, 20*time.Second, "standby console", func() (bool, error) {
+		var st statusResp
+		if err := getJSON(t, base2+"/api/status", &st); err != nil {
+			return false, err
+		}
+		return st.State == "idle", nil
+	})
+
+	// a console-launched worker comes up and polls for ~2s: it must find
+	// nothing, because the leftover run is stopped and no new run was started.
+	postJSON(t, base2+"/api/workers/spawn",
+		map[string]any{"count": 1, "capacity": 4, "batch": 8, "id_prefix": "regress"},
+		http.StatusOK,
+	)
+	spawnedWorker := "regress-00"
+	t.Cleanup(func() {
+		postJSON(t, base2+"/api/workers/stop", map[string]any{"id": spawnedWorker}, -1)
+	})
+	waitFor(t, 20*time.Second, "leftover worker online", func() (bool, error) {
+		var out struct {
+			Workers []struct {
+				ID        string `json:"id"`
+				Connected bool   `json:"connected"`
+			} `json:"workers"`
+		}
+		if err := getJSON(t, base2+"/api/workers", &out); err != nil {
+			return false, err
+		}
+		for _, w := range out.Workers {
+			if w.ID == spawnedWorker && w.Connected {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	time.Sleep(2 * time.Second)
+
+	var st statusResp
+	if err := getJSON(t, base2+"/api/status", &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.State != "idle" {
+		t.Fatalf("standby must stay idle, state=%s tasks=%+v", st.State, st.Tasks)
+	}
+	if st.Tasks.Done != 0 || st.Tasks.Pending != st.Tasks.Total || st.Tasks.Pending < 4 {
+		t.Fatalf("leftover tasks must remain pending (done=%d total=%d)", st.Tasks.Done, st.Tasks.Total)
+	}
+	if got := countTreeFiles(t, dst); got != 0 {
+		t.Fatalf("standby worker copied %d files into dst, want 0", got)
+	}
+
+	postJSON(t, base2+"/api/workers/stop", map[string]any{"id": spawnedWorker}, http.StatusOK)
+
+	if t.Failed() {
+		dumpLog(t, ctlLog1)
+		dumpLog(t, ctlLog2)
+	}
+}
+
+func countTreeFiles(t *testing.T, dir string) int {
+	t.Helper()
+	n := 0
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			n++
+		}
+		return nil
+	})
+	return n
+}

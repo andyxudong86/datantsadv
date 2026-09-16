@@ -1,4 +1,4 @@
-﻿// Command da_control runs the Controller of the distributed migration tool: it
+// Command da_control runs the Controller of the distributed migration tool: it
 // scans the source tree, diffs against the destination, ingests the resulting
 // file-level tasks into a persistent store, and serves the gRPC control plane
 // that Workers use to claim and report tasks. It also serves the embedded web
@@ -126,8 +126,14 @@ func main() {
 		if !*quiet {
 			logger.Printf("run %s started", runID)
 		}
-	} else if !*quiet {
-		logger.Printf("standby mode: no --src/--dst, awaiting run start from web console or API")
+	} else {
+		// Standby: hold claims so workers cannot pull leftover tasks from an
+		// earlier (stopped) run's store out of band. A console/API run start
+		// flips the state back to running.
+		ctrl.SetIdle()
+		if !*quiet {
+			logger.Printf("standby mode: no --src/--dst, awaiting run start from web console or API")
+		}
 	}
 
 	ctrl.Start()

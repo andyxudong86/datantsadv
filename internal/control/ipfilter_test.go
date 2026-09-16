@@ -236,6 +236,49 @@ func dialWorker(t *testing.T, target, id string, batch, capacity int) (*worker.W
 	return worker.New(client, worker.Config{WorkerID: id, BatchSize: batch, Capacity: capacity}), func() { conn.Close() }
 }
 
+// TestStandbyBootHoldsLeftoverTasks reproduces the "console worker starts
+// copying a previously stopped run" bug: a da_control rebooted in standby mode
+// must NOT make leftover pending tasks eligible. A worker that registers should
+// get empty claims (nothing copied) until a run is actually started.
+func TestStandbyBootHoldsLeftoverTasks(t *testing.T) {
+	store, err := taskstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Done()
+	if err := store.Ingest([]taskstore.Task{
+		{ID: "t1", Kind: taskstore.KindCopy, SrcPath: "/s/a", DstPath: "/d/a"},
+		{ID: "t2", Kind: taskstore.KindCopy, SrcPath: "/s/b", DstPath: "/d/b"},
+	}); err != nil {
+		t.Fatalf("ingest leftover tasks: %v", err)
+	}
+
+	// standby boot: fresh Controller on the same store, explicitly idle
+	ctl := control.NewController(store, control.Config{})
+	ctl.SetIdle()
+	if ctl.RunState() != control.RunIdle {
+		t.Fatalf("run state = %v, want idle", ctl.RunState())
+	}
+	ctl.Start()
+	defer ctl.Stop()
+	target, lis := startServerReadAddr(t, ctl)
+	defer lis.Close()
+
+	wk, closer := dialWorker(t, target, "w-standby", 8, 4)
+	defer closer()
+	if err := wk.Run(context.Background()); err != nil {
+		t.Fatalf("worker run: %v", err)
+	}
+
+	st := ctl.Stats()
+	if st.Done != 0 || st.InProgress != 0 || st.Failed != 0 {
+		t.Fatalf("standby boot must not act on leftover tasks, stats: %+v", st)
+	}
+	if st.Pending != 2 {
+		t.Fatalf("leftover pending = %d, want 2", st.Pending)
+	}
+}
+
 // waitFor polls cond until it is satisfied or the timeout elapses.
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string) {
 	t.Helper()

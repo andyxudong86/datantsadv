@@ -151,7 +151,7 @@ nohup da_worker --controller <控制机IP>:50051 --id workerA --batch 64 --capac
 `da_control` 支持两种启动方式，推荐第 ① 种：
 
 **① 待命模式（推荐，GUI 全程控制）**——不带 `--src/--dst`，控制机只起 gRPC + Web，
-迁移由控制台"启动迁移"表单（或 `POST /api/start`）发起，源/目标、并发、忽略列表等都在界面上填。表单"**仅允许的 Worker IP**"可把任务派发限定到指定的几台 Worker（逗号分隔多台；留空表示所有已上线 Worker 都能领任务）：
+迁移由控制台"启动迁移"表单（或 `POST /api/start`）发起，源/目标、并发、忽略列表等都在界面上填。表单"**仅允许的 Worker IP**"可把任务派发限定到指定的几台 Worker（逗号分隔多台；留空表示所有已上线 Worker 都能领任务）。待命模式（不带 `--src/--dst`）重启后**不会**自动重跑上一轮任务——残余任务库会保持冻结，直到你在界面上新发起一次迁移：
 
 ```sh
 nohup da_control \
