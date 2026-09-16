@@ -16,6 +16,7 @@ import (
 
 	"datants/internal/control"
 	"datants/internal/history"
+	"datants/internal/sshrun"
 	"datants/internal/taskstore"
 	"datants/internal/workerctl"
 )
@@ -46,6 +47,7 @@ type Server struct {
 	interval time.Duration // SSE refresh interval
 	spawner  *workerctl.Manager
 	spawnCfg SpawnConfig
+	remote   *sshrun.Manager
 }
 
 // SpawnConfig holds what the control process needs to launch local da_worker
@@ -82,6 +84,14 @@ func WithWorkerSpawning(m *workerctl.Manager, cfg SpawnConfig) Option {
 	}
 }
 
+// WithRemoteSpawning enables the console to launch workers on the nodes of the
+// declared worker pool over SSH (see internal/sshrun).
+func WithRemoteSpawning(m *sshrun.Manager) Option {
+	return func(s *Server) {
+		s.remote = m
+	}
+}
+
 // NewServer builds the API server over a controller (or fake).
 func NewServer(ctl ControlService, opts ...Option) *Server {
 	s := &Server{
@@ -101,6 +111,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/workers", s.handleWorkers)
 	mux.HandleFunc("POST /api/workers/pool", s.handleSetWorkerPool)
+	mux.HandleFunc("POST /api/workers/pool/spawn", s.handlePoolSpawn)
+	mux.HandleFunc("POST /api/workers/pool/stop", s.handlePoolStop)
 	mux.HandleFunc("POST /api/workers/spawn", s.handleSpawn)
 	mux.HandleFunc("POST /api/workers/stop", s.handleStopWorker)
 	mux.HandleFunc("GET /api/tasks", s.handleTasks)

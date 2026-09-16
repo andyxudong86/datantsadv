@@ -268,6 +268,23 @@ curl -s -u admin:CHANGE-ME -X POST http://127.0.0.1:8080/api/workers/pool -H 'Co
 
 低层接口仍支持每次 run 单独指定：`POST /api/start` 里传 `"worker_ips":["127.0.0.1"]` 覆盖池（传了就不看池）。
 
+### 4.7 从 Worker 页经 SSH 拉起各节点 Worker 验证
+
+控制机启动时带 `--ssh-user`（配合 `--ssh-key`）后，Worker 池行内的"启动"会经 SSH 在对应机器上拉起 da_worker：首次把控制机 `--worker-bin` 的上报二进制上传到该机的 `<--ssh-remote-dir>/da_worker`（默认 `/usr/local/datantsadv`），之后的"启动"直接复用；"停止 N"停掉该机由控制机拉起的全部 worker。远端 worker 连接使用的控制器地址默认按 `--listen` 从本机第一个非回环 IPv4 推导，可用 `--ssh-ctrl-addr`（如 `145.129.0.23:50051`）覆盖：
+
+```bash
+# 控制机（RHEL 7.9）先确认能免密 ssh 到目标机器:
+ssh root@145.129.0.24 'echo ok'
+# 再启动控制机:
+nohup da_control --state /var/lib/migrate --listen 0.0.0.0:50051 \
+  --http 0.0.0.0:8080 --web-auth admin:CHANGE-ME \
+  --worker-bin /usr/local/datantsadv/da_worker \
+  --ssh-user root --ssh-key /root/.ssh/id_rsa &
+# Worker 页：池里保存 145.129.0.23 / 145.129.0.24 两行 → 各点"启动" →
+#   期望两行分别变成"远程就绪"（/api/workers 里 spawned 出现 remote=true 的条目，节点对应 Worker 在线）
+# 高层验证与 4.6 相同；"/api/workers/pool/stop" 传 {ip} 可整台停掉由控制机拉起的 worker
+```
+
 ---
 
 ## 5. systemd 服务化验证（可选）

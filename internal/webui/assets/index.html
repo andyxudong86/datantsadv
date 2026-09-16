@@ -120,15 +120,15 @@
         <div class="card-title">Worker 池（参与迁移的节点）
           <button id="pool-fill" class="ghost">填入在线 Worker</button>
         </div>
-        <div class="muted">每行一个节点：IP [并发] [批次]，如 <tt>10.0.0.7 8 64</tt>。保存后，只有池内的节点会处于“准备接收任务”状态，迁移只派发给它们。本机“启动 Worker”会自动把 127.0.0.1 加入池。</div>
+        <div class="muted">每行一个节点：IP [并发] [批次]，如 <tt>10.0.0.7 8 64</tt>。保存后，只有池内的节点会处于“准备接收任务”状态，迁移只派发给它们。“启动”会通过 SSH 在对应机器上拉起 da_worker（控制机需 <tt>--ssh-user</tt>/<tt>--ssh-key</tt>）；本机“启动 Worker”自动把 127.0.0.1 加入池。</div>
         <form id="poolform" class="form">
           <textarea id="pool-ips" rows="4" placeholder="10.0.0.7 8 64&#10;10.0.0.8"></textarea>
           <button id="pool-save" class="primary">保存 Worker 池</button>
         </form>
         <div id="pool-msg" class="error"></div>
         <table id="pool-table" class="table">
-          <thead><tr><th>节点</th><th>IP</th><th>并发</th><th>批次</th></tr></thead>
-          <tbody><tr><td colspan="4" class="muted">未配置</td></tr></tbody>
+          <thead><tr><th>节点</th><th>IP</th><th>并发</th><th>批次</th><th>操作</th></tr></thead>
+          <tbody><tr><td colspan="5" class="muted">未配置 — 迁移会派发给全部在线 Worker。</td></tr></tbody>
         </table>
       </div>
 

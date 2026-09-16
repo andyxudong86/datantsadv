@@ -1,7 +1,8 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -49,7 +50,7 @@ func get(h http.Handler, path string) *httptest.ResponseRecorder {
 }
 
 func TestBuildWebHandlerNoAuth(t *testing.T) {
-	h := buildWebHandler(testController(t), "", "", nil, webapi.SpawnConfig{})
+	h := buildWebHandler(testController(t), "", "", nil, webapi.SpawnConfig{}, nil)
 
 	// SPA shell served
 	rr := get(h, "/")
@@ -83,7 +84,7 @@ func TestBuildWebHandlerNoAuth(t *testing.T) {
 }
 
 func TestBuildWebHandlerBasicAuth(t *testing.T) {
-	h := buildWebHandler(testController(t), "admin", "s3cret", nil, webapi.SpawnConfig{})
+	h := buildWebHandler(testController(t), "admin", "s3cret", nil, webapi.SpawnConfig{}, nil)
 
 	// no credentials -> 401 with WWW-Authenticate
 	rr := get(h, "/")
@@ -147,5 +148,22 @@ func TestLocalConnectAddr(t *testing.T) {
 		if got := localConnectAddr(c.in); got != c.want {
 			t.Errorf("localConnectAddr(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestExternalConnectAddr(t *testing.T) {
+	for _, in := range []string{"0.0.0.0:50051", ":50051", "[::]:50051"} {
+		got := externalConnectAddr(in)
+		host, _, err := net.SplitHostPort(got)
+		if err != nil {
+			t.Fatalf("externalConnectAddr(%q) = %q: %v", in, got, err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || ip.IsLoopback() || net.ParseIP(host).To4() == nil {
+			t.Errorf("externalConnectAddr(%q) = %q, want a non-loopback IPv4", in, got)
+		}
+	}
+	if got := externalConnectAddr("192.168.1.5:50051"); got != "192.168.1.5:50051" {
+		t.Errorf("concrete addr = %q", got)
 	}
 }

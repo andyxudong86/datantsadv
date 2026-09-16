@@ -226,9 +226,10 @@
     var box = $("#spawn-list");
     if (!sp || !sp.length) { box.innerHTML = '<div class="muted">没有由控制机拉起的 Worker。</div>'; return; }
     box.innerHTML = sp.map(function (s) {
+      var where = s.remote ? "节点 " + esc(s.host) : s.alive ? "存活 pid " + esc(s.pid) : "已退出";
       return '<div class="worker-card">' +
-        '<div class="w-id">' + esc(s.id) + " " + badge(s.alive ? "running" : "idle", s.alive ? "存活 pid " + esc(s.pid) : "已退出") + "</div>" +
-        '<div class="w-meta">启动 ' + fmtTime(s.started_at) + "</div>" +
+        '<div class="w-id">' + esc(s.id) + " " + badge(s.alive ? "running" : "idle", s.alive ? (s.remote ? "远程就绪" : "存活 pid " + esc(s.pid)) : "已退出") + "</div>" +
+        '<div class="w-meta">' + where + " · 启动 " + fmtTime(s.started_at) + "</div>" +
         '<div class="w-meta">' + (s.args || []).join(" ") + "</div>" +
         '<button class="ghost spawn-stop" data-id="' + esc(s.id) + '"' + (s.alive ? "" : " disabled") + ">停止</button>" +
         "</div>";
@@ -244,15 +245,21 @@
     };
   }
 
-  function renderPool(pool) {
+  function renderPool(pool, running) {
     var tb = $("#pool-table tbody");
-    if (!pool || !pool.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">未配置 — 迁移会派发给全部在线 Worker。</td></tr>'; return; }
+    if (!pool || !pool.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">未配置 — 迁移会派发给全部在线 Worker。</td></tr>'; return; }
     tb.innerHTML = pool.map(function (p) {
+      var ip = p.ip || "";
+      var n = (running && running[ip]) || 0;
+      var stopBtn = n > 0
+        ? '<button class="ghost pool-stop" data-ip="' + esc(ip) + '">停止 ' + n + '</button>'
+        : '';
       return "<tr>" +
         "<td>" + esc(p.id || "—") + "</td>" +
-        "<td>" + esc(p.ip || "—") + "</td>" +
+        "<td>" + esc(ip) + "</td>" +
         "<td>" + (p.capacity || "—") + "</td>" +
         "<td>" + (p.batch || "—") + "</td>" +
+        "<td><button class=\"primary pool-start\" data-ip=\"" + esc(ip) + '" data-cap="' + (p.capacity || 4) + "\" data-batch=\"" + (p.batch || 16) + '">启动</button> ' + stopBtn + "</td>" +
         "</tr>";
     }).join("");
   }
@@ -262,9 +269,14 @@
       lastWorkers = data;
       var ws = data.workers || [];
       var pool = data.pool || [];
-      renderPool(pool);
+      var spawned = data.spawned || [];
+      var running = {};
+      spawned.forEach(function (s) {
+        if (s.remote && s.alive) running[s.host] = (running[s.host] || 0) + 1;
+      });
+      renderPool(pool, running);
       var box = $("#worker-list");
-      if (!ws.length) { box.innerHTML = '<div class="muted">还没有 Worker 注册。</div>'; renderSpawned(data.spawned); return; }
+      if (!ws.length) { box.innerHTML = '<div class="muted">还没有 Worker 注册。</div>'; renderSpawned(spawned); return; }
       box.innerHTML = ws.map(function (w) {
         var b;
         if (!w.connected) b = badges().offline();
@@ -278,7 +290,7 @@
           '<div class="w-meta">注册 ' + fmtTime(w.joined_at) + "</div>" +
           "</div>";
       }).join("");
-      renderSpawned(data.spawned);
+      renderSpawned(spawned);
     }).catch(function (err) {
       $("#worker-list").innerHTML = '<div class="error">' + esc(err.message) + "</div>";
     });
@@ -374,12 +386,40 @@
 
   document.addEventListener("click", function (e) {
     var b = e.target.closest(".spawn-stop");
-    if (!b) return;
-    b.disabled = true;
-    var raw = { id: b.dataset.id };
-    api("/api/workers/stop", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(raw)
-    }).then(loadWorkers).catch(function (err) { alert(err.message); loadWorkers(); });
+    if (b) {
+      b.disabled = true;
+      var raw = { id: b.dataset.id };
+      api("/api/workers/stop", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(raw)
+      }).then(loadWorkers).catch(function (err) { alert(err.message); loadWorkers(); });
+      return;
+    }
+    var ps = e.target.closest(".pool-start");
+    if (ps) {
+      ps.disabled = true;
+      var body = {
+        ip: ps.dataset.ip,
+        capacity: parseInt(ps.dataset.cap, 10) || 4,
+        batch: parseInt(ps.dataset.batch, 10) || 16
+      };
+      api("/api/workers/pool/spawn", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+      }).then(function () {
+        loadWorkers();
+      }).catch(function (err) {
+        ps.disabled = false;
+        alert("启动 " + body.ip + " 失败：" + err.message);
+        loadWorkers();
+      });
+      return;
+    }
+    var st = e.target.closest(".pool-stop");
+    if (st) {
+      st.disabled = true;
+      api("/api/workers/pool/stop", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip: st.dataset.ip })
+      }).then(loadWorkers).catch(function (err) { alert(err.message); loadWorkers(); });
+    }
   });
 
   // Worker 页激活时每 5 秒刷新一次本机拉起状态

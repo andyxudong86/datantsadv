@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"datants/internal/control"
+	"datants/internal/sshrun"
 	"datants/internal/taskstore"
 	"datants/internal/workerctl"
 )
@@ -83,6 +84,41 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.buildStatus())
 }
 
+// spawnedDTO unifies locally- and SSH-launched workers in one list for the UI.
+type spawnedDTO struct {
+	ID        string     `json:"id"`
+	PID       int        `json:"pid"`
+	Alive     bool       `json:"alive"`
+	StartedAt time.Time  `json:"started_at"`
+	Name      string     `json:"name,omitempty"`
+	Args      []string   `json:"args,omitempty"`
+	ExitedAt  *time.Time `json:"exited_at,omitempty"`
+	Remote    bool       `json:"remote,omitempty"`
+	Host      string     `json:"host,omitempty"`
+}
+
+// spawnedSnapshot combines the local and remote launch managers.
+func (s *Server) spawnedSnapshot() []spawnedDTO {
+	out := []spawnedDTO{}
+	if s.spawner != nil {
+		for _, si := range s.spawner.Snapshot() {
+			out = append(out, spawnedDTO{
+				ID: si.ID, PID: si.PID, Alive: si.Alive, StartedAt: si.StartedAt,
+				Name: si.Name, Args: si.Args, ExitedAt: si.ExitedAt,
+			})
+		}
+	}
+	if s.remote != nil && s.remote.Enabled() {
+		for _, si := range s.remote.Snapshot() {
+			out = append(out, spawnedDTO{
+				ID: si.ID, PID: si.PID, Alive: si.Alive, StartedAt: si.StartedAt,
+				Args: si.Args, ExitedAt: si.ExitedAt, Remote: true, Host: si.Host,
+			})
+		}
+	}
+	return out
+}
+
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	ws := s.ctl.Workers()
 	// Build the membership map keyed by normalized IP once per call.
@@ -104,11 +140,96 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"workers": out,
 		"pool":    poolOut,
-	}
-	if s.spawner != nil {
-		resp["spawned"] = s.spawner.Snapshot()
+		"spawned": s.spawnedSnapshot(),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// poolSpawnRequestDTO is the JSON body of POST /api/workers/pool/spawn: it
+// names a node from the declared pool to SSH-launch one worker on.
+type poolSpawnRequestDTO struct {
+	IP       string `json:"ip"`
+	Capacity int    `json:"capacity"`
+	Batch    int    `json:"batch"`
+}
+
+// poolStopRequestDTO is the JSON body of POST /api/workers/pool/stop.
+type poolStopRequestDTO struct {
+	IP string `json:"ip"`
+}
+
+func (s *Server) handlePoolSpawn(w http.ResponseWriter, r *http.Request) {
+	if s.remote == nil || !s.remote.Enabled() {
+		writeErr(w, http.StatusBadRequest, "SSH remote spawning is not enabled (--ssh-user/--ssh-key and --worker-bin)")
+		return
+	}
+	var req poolSpawnRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	req.IP = control.NormalizeIP(req.IP)
+	if req.IP == "" {
+		writeErr(w, http.StatusBadRequest, "ip is required")
+		return
+	}
+	var entry *control.WorkerPoolEntry
+	pool := s.pool()
+	for i := range pool {
+		if pool[i].IP == req.IP {
+			entry = &pool[i]
+			break
+		}
+	}
+	if entry == nil || entry.IP == "" {
+		writeErr(w, http.StatusBadRequest, "ip is not in the worker pool")
+		return
+	}
+	if req.Capacity < 1 {
+		req.Capacity = entry.Capacity
+	}
+	if req.Batch < 1 {
+		req.Batch = entry.Batch
+	}
+	if req.Capacity < 1 || req.Capacity > maxCapacity || req.Batch < 1 {
+		writeErr(w, http.StatusBadRequest, "capacity (1.."+strconv.Itoa(maxCapacity)+") and batch must be positive")
+		return
+	}
+	info, err := s.remote.Spawn(req.IP, req.Capacity, req.Batch)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.logf("spawn remote worker %s on %s (capacity=%d batch=%d)", info.ID, info.Host, req.Capacity, req.Batch)
+	writeJSON(w, http.StatusOK, map[string]any{"spawned": []spawnedDTO{{
+		ID: info.ID, PID: info.PID, Alive: info.Alive, StartedAt: info.StartedAt,
+		Args: info.Args, Remote: true, Host: info.Host,
+	}}})
+}
+
+// pool returns the current worker pool (fetched per request so it always
+// matches the controller's state).
+func (s *Server) pool() []control.WorkerPoolEntry {
+	return s.ctl.WorkerPool()
+}
+
+func (s *Server) handlePoolStop(w http.ResponseWriter, r *http.Request) {
+	if s.remote == nil || !s.remote.Enabled() {
+		writeErr(w, http.StatusBadRequest, "SSH remote spawning is not enabled")
+		return
+	}
+	var req poolStopRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	n, err := s.remote.StopHost(req.IP)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.logf("stopped %d remote worker(s) on %s", n, req.IP)
+	writeJSON(w, http.StatusOK, map[string]any{"stopped": n})
 }
 
 // setWorkerPoolRequestDTO is the JSON body of POST /api/workers/pool.
@@ -220,7 +341,7 @@ type stopWorkerRequestDTO struct {
 }
 
 func (s *Server) handleStopWorker(w http.ResponseWriter, r *http.Request) {
-	if s.spawner == nil {
+	if s.spawner == nil && (s.remote == nil || !s.remote.Enabled()) {
 		writeErr(w, http.StatusBadRequest, "worker spawning is not enabled on this controller")
 		return
 	}
@@ -229,8 +350,8 @@ func (s *Server) handleStopWorker(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	if err := s.spawner.Stop(req.ID); err != nil {
-		if err == workerctl.ErrNotSpawned {
+	if err := s.stopManaged(req.ID); err != nil {
+		if err == workerctl.ErrNotSpawned || err == sshrun.ErrNotSpawned {
 			writeErr(w, http.StatusNotFound, "no managed worker with id "+req.ID)
 			return
 		}
@@ -239,6 +360,19 @@ func (s *Server) handleStopWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logf("stopped managed worker %s", req.ID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// stopManaged stops a local or SSH-launched worker by id.
+func (s *Server) stopManaged(id string) error {
+	if s.remote != nil {
+		if _, ok := s.remote.Info(id); ok {
+			return s.remote.StopID(id)
+		}
+	}
+	if s.spawner != nil {
+		return s.spawner.Stop(id)
+	}
+	return workerctl.ErrNotSpawned
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {

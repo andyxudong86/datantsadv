@@ -29,6 +29,7 @@ import (
 	"datants/internal/clilog"
 	"datants/internal/control"
 	"datants/internal/history"
+	"datants/internal/sshrun"
 	"datants/internal/taskstore"
 	"datants/internal/webapi"
 	"datants/internal/webui"
@@ -57,6 +58,12 @@ func main() {
 	httpAddr := fs.String("http", "127.0.0.1:8080", "web console listen address (\"\" disables the console)")
 	webAuth := fs.String("web-auth", "", "optional HTTP basic auth for the console as user:pass")
 	workerBin := fs.String("worker-bin", "", "path to da_worker so the console can launch local worker processes (\"\" disables the feature)")
+	sshUser := fs.String("ssh-user", "", "SSH account used to launch pool workers on remote nodes (\"\" disables remote launch)")
+	sshPort := fs.Int("ssh-port", 22, "SSH port used for remote pool workers")
+	sshKey := fs.String("ssh-key", "", "SSH private key for remote pool workers (default ~/.ssh/id_rsa or ~/.ssh/id_ed25519)")
+	sshPassword := fs.String("ssh-password", "", "SSH password for remote pool workers (fallback when no key); prefer --ssh-key")
+	sshRemoteDir := fs.String("ssh-remote-dir", "/usr/local/datantsadv", "remote directory where da_worker is uploaded and run")
+	sshCtrlAddr := fs.String("ssh-ctrl-addr", "", "controller address remote pool workers dial to register (default: derived from --listen, using the first non-loopback IP)")
 	fs.Parse(os.Args[1:])
 
 	if *state == "" {
@@ -181,7 +188,32 @@ func main() {
 		}
 	}
 
-	webHandler := buildWebHandler(ctrl, webUser, webPass, spawner, spawnCfg)
+	// Optional remote launch of pool workers over SSH (uploads da_worker to
+	// each node, then runs it there). Needs --worker-bin and --ssh-user.
+	var remote *sshrun.Manager
+	if *workerBin != "" && *sshUser != "" {
+		ctrlAddr := *sshCtrlAddr
+		if ctrlAddr == "" {
+			ctrlAddr = externalConnectAddr(lis.Addr().String())
+		}
+		remote = sshrun.NewManager(sshrun.Config{
+			User:        *sshUser,
+			Port:        *sshPort,
+			KeyFile:     *sshKey,
+			Password:    *sshPassword,
+			WorkerBin:   *workerBin,
+			CtrlAddr:    ctrlAddr,
+			RemoteDir:   *sshRemoteDir,
+			IdlePoll:    3 * time.Second,
+			DialTimeout: 10 * time.Second,
+			Logger:      logger,
+		})
+		if !*quiet {
+			logger.Printf("console may launch pool workers over SSH (%s), nodes dial %s", *sshUser, ctrlAddr)
+		}
+	}
+
+	webHandler := buildWebHandler(ctrl, webUser, webPass, spawner, spawnCfg, remote)
 	var httpSrv *http.Server
 	if *httpAddr != "" {
 		httpSrv = &http.Server{
@@ -214,6 +246,11 @@ func main() {
 				logger.Printf("stop spawned workers: %v", err)
 			}
 		}
+		if remote != nil {
+			if err := remote.StopAll(); err != nil && !*quiet {
+				logger.Printf("stop remote workers: %v", err)
+			}
+		}
 		if httpSrv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			httpSrv.Shutdown(ctx)
@@ -237,11 +274,12 @@ func (m *multiFlag) Set(v string) error {
 
 // buildWebHandler assembles the web console: the webapi REST/SSE handlers
 // mounted behind the embedded SPA, wrapped in optional HTTP basic auth.
-func buildWebHandler(ctl *control.Controller, user, pass string, spawner *workerctl.Manager, spawnCfg webapi.SpawnConfig) http.Handler {
-	web := webapi.NewServer(
-		ctl,
-		webapi.WithWorkerSpawning(spawner, spawnCfg),
-	)
+func buildWebHandler(ctl *control.Controller, user, pass string, spawner *workerctl.Manager, spawnCfg webapi.SpawnConfig, remote *sshrun.Manager) http.Handler {
+	opts := []webapi.Option{webapi.WithWorkerSpawning(spawner, spawnCfg)}
+	if remote != nil {
+		opts = append(opts, webapi.WithRemoteSpawning(remote))
+	}
+	web := webapi.NewServer(ctl, opts...)
 	h := webui.Handler(web.Handler())
 	if user != "" {
 		h = basicAuth(user, pass, h)
@@ -262,6 +300,46 @@ func localConnectAddr(addr string) string {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
+}
+
+// externalConnectAddr is like localConnectAddr but for machines that must
+// reach the controller over the network: a wildcard listen host resolves to the
+// first non-loopback IPv4 of this host.
+func externalConnectAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		if ip := firstIPv4(); ip != "" {
+			host = ip
+		}
+	case "*":
+		if ip := firstIPv4(); ip != "" {
+			host = ip
+		}
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func firstIPv4() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			ip := ipn.IP.To4()
+			if ip != nil && !ip.IsLoopback() {
+				return ip.String()
+			}
+		}
+	}
+	return ""
 }
 
 // basicAuth guards h with HTTP Basic authentication against user:pass.
