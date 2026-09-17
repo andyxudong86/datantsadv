@@ -3,6 +3,7 @@ package sshrun_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -134,17 +135,18 @@ func runRemoteCommand(ch ssh.Channel, cmd string, done <-chan struct{}) {
 			_ = os.WriteFile(m[1], data, 0o755)
 		}
 		finish(ch)
-	case strings.Contains(cmd, "wc -c"):
-		pat := regexp.MustCompile(`wc -c < '([^']+)'`)
+	case strings.Contains(cmd, "sha256sum"):
+		// staleness probe: reply with the hash of the on-disk file, or nothing
+		// when the file is absent (the manager treats "" as "must upload").
+		pat := regexp.MustCompile(`sha256sum '([^']+)'`)
 		m := pat.FindStringSubmatch(cmd)
 		if m == nil {
 			finish(ch)
 			return
 		}
-		if st, err := os.Stat(m[1]); err == nil {
-			fmt.Fprintf(ch, "%d\n", st.Size())
-		} else {
-			fmt.Fprintf(ch, "0\n")
+		if data, err := os.ReadFile(m[1]); err == nil {
+			sum := sha256.Sum256(data)
+			fmt.Fprintf(ch, "%x\n", sum)
 		}
 		finish(ch)
 	default:
@@ -321,6 +323,61 @@ func TestRemoteSpawnStop(t *testing.T) {
 	}
 	if _, err := m.StopHost("127.0.0.1"); err != nil {
 		t.Fatalf("stopping empty host err = %v", err)
+	}
+}
+
+// TestRemoteSpawnReplacesStaleWorker is the regression case for the size-only
+// staleness check: two different da_worker builds can have the same byte length
+// while one predates --idle-poll. The manager must hash the remote file and
+// re-upload when the content differs, not skip it because the sizes match.
+func TestRemoteSpawnReplacesStaleWorker(t *testing.T) {
+	const (
+		stale  = "OLD-DA-WORKER-OLD"
+		newBin = "NEW-DA-WORKER-NEW"
+	)
+	if len(stale) != len(newBin) {
+		t.Fatalf("test invalid: %d != %d", len(stale), len(newBin))
+	}
+	local := filepath.Join(t.TempDir(), "da_worker")
+	if err := os.WriteFile(local, []byte(newBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	remoteDir := filepath.Join(t.TempDir(), "datantsadv")
+	remotePath := filepath.Join(remoteDir, "da_worker")
+	// Seed a same-size stale binary on the node, as if a previous deployment
+	// left an old da_worker behind.
+	if err := os.MkdirAll(remoteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(remotePath, []byte(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := startFakeSSH(t, "pw")
+	m := sshrun.NewManager(sshrun.Config{
+		User:        "u",
+		Port:        srv.port(),
+		Password:    "pw",
+		WorkerBin:   local,
+		CtrlAddr:    "145.129.0.23:50051",
+		RemoteDir:   remoteDir,
+		IdlePoll:    3 * time.Second,
+		DialTimeout: 5 * time.Second,
+	})
+
+	info, err := m.Spawn("127.0.0.1", 8, 64)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	got, err := os.ReadFile(remotePath)
+	if err != nil {
+		t.Fatalf("read remote binary: %v", err)
+	}
+	if string(got) != newBin {
+		t.Fatalf("remote binary = %q, want %q (stale copy was not replaced)", got, newBin)
+	}
+	if err := m.StopID(info.ID); err != nil {
+		t.Fatalf("stop: %v", err)
 	}
 }
 

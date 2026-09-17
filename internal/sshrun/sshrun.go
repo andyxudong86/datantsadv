@@ -12,6 +12,8 @@ package sshrun
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -385,18 +387,21 @@ func defaultKeyPath() string {
 	return ""
 }
 
-// ensureBinary uploads the local worker binary to remotePath unless it is
-// already present with the same size.
+// ensureBinary uploads the local worker binary to remotePath unless a file with
+// identical content is already there. Staleness is judged by SHA-256, not size:
+// two da_worker builds can share a byte length while one predates newer flags
+// such as --idle-poll, and a size-only check would then keep the old binary on
+// the node forever.
 func (m *Manager) ensureBinary(client *ssh.Client, remotePath string) error {
-	local, err := os.Stat(m.cfg.WorkerBin)
+	localHash, err := fileSHA256(m.cfg.WorkerBin)
 	if err != nil {
 		return err
 	}
-	cur, err := m.remoteSize(client, remotePath)
+	remoteHash, err := m.remoteSHA256(client, remotePath)
 	if err != nil {
 		return err
 	}
-	if cur == local.Size() {
+	if remoteHash == localHash {
 		return nil
 	}
 	data, err := os.ReadFile(m.cfg.WorkerBin)
@@ -418,22 +423,31 @@ func (m *Manager) ensureBinary(client *ssh.Client, remotePath string) error {
 	return nil
 }
 
-func (m *Manager) remoteSize(client *ssh.Client, remotePath string) (int64, error) {
+// fileSHA256 returns the lowercase hex SHA-256 of a local file.
+func fileSHA256(file string) (string, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// remoteSHA256 returns the lowercase hex SHA-256 of a remote file, or "" when
+// the file does not exist (the pipeline still exits 0, so no error is reported
+// and the caller uploads).
+func (m *Manager) remoteSHA256(client *ssh.Client, remotePath string) (string, error) {
 	sess, err := client.NewSession()
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer sess.Close()
-	out, err := sess.Output(fmt.Sprintf("if [ -f %s ]; then wc -c < %s; else echo 0; fi",
-		shq(remotePath), shq(remotePath)))
+	out, err := sess.Output(fmt.Sprintf("sha256sum %s 2>/dev/null | awk '{print $1}'",
+		shq(remotePath)))
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("sshrun: bad remote size %q", string(out))
-	}
-	return n, nil
+	return strings.TrimSpace(string(out)), nil
 }
 
 func (m *Manager) logf(format string, args ...any) {
