@@ -25,6 +25,9 @@ func (e *abortError) Error() string { return e.msg }
 func badRequest(msg string) error { return &abortError{msg: msg} }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	// no-cache: the console polls live state over SSE, but any stale cache of a
+	// REST snapshot (e.g. /api/status) would freeze the dashboard on old state.
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)

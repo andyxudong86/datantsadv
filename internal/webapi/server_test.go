@@ -153,6 +153,9 @@ func TestStatusEndpoint(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code = %d, body %s", rr.Code, rr.Body.String())
 	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", got)
+	}
 	st := decode[map[string]any](t, rr)
 	if st["state"] != "running" {
 		t.Fatalf("state = %v", st["state"])
