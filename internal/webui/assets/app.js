@@ -75,10 +75,15 @@
       var hasWork       = t.pending > 0 || t.in_progress > 0;
       var working       = state !== "idle" || hasActiveRun || hasWork;
 
-      // \u8fd0\u884c\u5fbd\u6807
+      // \u8fd0\u884c\u5fbd\u6807\uff1a\u539f\u5730\u66f4\u65b0\u800c\u4e0d\u66ff\u6362\u5143\u7d20\u3002
+      // badge() \u8f93\u51fa\u7684 span \u4e0d\u542b id\uff0c\u4ee5\u524d\u7528 outerHTML \u66ff\u6362\u4f1a\u4e22\u6389
+      // #run-badge\uff0c\u5bfc\u81f4\u4e0b\u4e00\u884c\u67e5\u8be2\u8fd4\u56de null \u800c\u4e2d\u65ad\u7684\u6309\u94ae\u66f4\u65b0\u3002
       var badgeK = state === "running" ? "running" : state === "paused" ? "paused" : "idle";
-      $("#run-badge").outerHTML = badge(badgeK, state === "running" ? "\u8fd0\u884c\u4e2d" : state === "paused" ? "\u5df2\u6682\u505c" : "\u7a7a\u95f2");
-      $("#run-badge").classList.add("badge", "badge-" + badgeK);
+      var rb = $("#run-badge");
+      if (rb) {
+        rb.className = "badge badge-" + badgeK;
+        rb.textContent = state === "running" ? "\u8fd0\u884c\u4e2d" : state === "paused" ? "\u5df2\u6682\u505c" : "\u7a7a\u95f2";
+      }
 
       // \u8fdb\u5ea6
       var pct = d.progress_pct != null ? d.progress_pct : 0;

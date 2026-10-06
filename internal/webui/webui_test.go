@@ -121,4 +121,7 @@ func TestConsoleStatusDiagnostics(t *testing.T) {
 	if !strings.Contains(js, "catch (err)") {
 		t.Fatal("app.js applyStatus lacks the error banner")
 	}
+	if strings.Contains(js, `$("#run-badge").outerHTML`) {
+		t.Fatal("app.js must not replace #run-badge via outerHTML: badge() drops the id and breaks the button updates")
+	}
 }
