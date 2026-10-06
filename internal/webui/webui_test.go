@@ -101,3 +101,24 @@ func TestPathTraversalIsSafe(t *testing.T) {
 		t.Fatalf("traversal path not handled by fallback: code=%d", rr.Code)
 	}
 }
+
+func TestConsoleStatusDiagnostics(t *testing.T) {
+	h := Handler(stubAPI{})
+	rr := get(h, "/index.html")
+	html := rr.Body.String()
+	for _, want := range []string{`id="run-updated"`, `id="state-err"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("index.html missing %s", want)
+		}
+	}
+	rr = get(h, "/app.js")
+	js := rr.Body.String()
+	for _, want := range []string{`$("#run-updated")`, `$("#state-err")`} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %s", want)
+		}
+	}
+	if !strings.Contains(js, "catch (err)") {
+		t.Fatal("app.js applyStatus lacks the error banner")
+	}
+}

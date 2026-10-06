@@ -62,53 +62,70 @@
     var state = d.state || "idle";
     var run   = d.run;
     var t     = d.tasks || {};
-    var hasActiveRun  = run != null;
-    var hasWork       = t.pending > 0 || t.in_progress > 0;
-    var working       = state !== "idle" || hasActiveRun || hasWork;
 
-    // \u8fd0\u884c\u5fbd\u6807
-    var badgeK = state === "running" ? "running" : state === "paused" ? "paused" : "idle";
-    $("#run-badge").outerHTML = badge(badgeK, state === "running" ? "\u8fd0\u884c\u4e2d" : state === "paused" ? "\u5df2\u6682\u505c" : "\u7a7a\u95f2");
-    $("#run-badge").classList.add("badge", "badge-" + badgeK);
-
-    // \u8fdb\u5ea6
-    var pct = d.progress_pct != null ? d.progress_pct : 0;
-    if (state === "idle" && !hasActiveRun && !hasWork) pct = 0;
-    $("#progress-bar").style.width = pct.toFixed(1) + "%";
-
-    // \u4efb\u52a1\u7edf\u8ba1
-    $("#st-tsk").textContent = t.total || 0;
-    $("#st-done").textContent = t.done || 0;
-    $("#st-fail").textContent = t.failed || 0;
-    $("#st-rate").textContent = fmtRate(d.rate_bytes_per_sec);
-
-    // \u5f53\u524d run \u660e\u7ec6
-    if (hasActiveRun) {
-      var targets = run.targets || [];
-      var targetDesc;
-      if (targets.length > 1) {
-        targetDesc = targets.length + " \u7ec4\u76ee\u5f55\u8fc1\u79fb\u4e2d";
-      } else {
-        targetDesc = esc(run.src || "") + " \u2192 " + esc(run.dst || "");
-      }
-      $("#run-detail").innerHTML =
-        "\u8fd0\u884c <b>" + esc(run.id) + "</b>\uff0c" + targetDesc +
-        "\uff0c\u626b\u63cf " +
-        (run.scan_done ? "\u5b8c\u6210" : "\u8fdb\u884c\u4e2d\uff08\u5df2\u53d1\u73b0 " + (run.scanned_tasks || 0) + " \u4e2a\u4efb\u52a1\uff09") +
-        "\uff0c\u5df2\u8fc1\u79fb <b>" + run.files_done + "</b> \u4e2a\u6587\u4ef6 / " + fmtBytes(run.bytes_done) +
-        "\uff0c\u5931\u8d25 <b>" + run.files_failed + "</b>\uff0c\u8017\u65f6 " + fmtDur(run.elapsed_ms);
-    } else if (working) {
-      $("#run-detail").textContent = hasWork ? "\u4efb\u52a1\u4ecd\u5728\u5904\u7406\u4e2d\uff08" + (t.pending || 0) + " \u7b49\u5f85\uff0c" + (t.in_progress || 0) + " \u6267\u884c\u4e2d\uff09\u3002" : "\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fc1\u79fb\u3002";
-    } else {
-      $("#run-detail").textContent = "\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fc1\u79fb\u3002";
+    // \u7b2c\u4e00\u884c\u5148\u5199\u201c\u66f4\u65b0\u4e8e\u201d\uff0c\u4f5c\u4e3a\u9875\u9762\u662f\u5426\u5b9e\u65f6\u5237\u65b0\u7684\u76f4\u63a5\u8bc1\u636e\uff1b
+    // \u540e\u534a\u6bb5\u82e5\u6e32\u67d3\u51fa\u9519\u4f1a\u5728\u9875\u9762\u4e0a\u663e\u793a #state-err\u3002
+    var updEl = $("#run-updated");
+    if (updEl) {
+      updEl.textContent = "\u66f4\u65b0\u4e8e " + fmtTime(d.now || new Date().toISOString());
     }
 
-    // \u6309\u94ae\uff1a\u4efb\u4f55\u8fd0\u884c\u6001\u6216\u4ecd\u6709\u4efb\u52a1\u90fd\u7981\u6b62\u518d\u6b21\u542f\u52a8
-    $("#btn-start").disabled = state !== "idle" || hasActiveRun || hasWork;
-    $("#btn-pause").disabled = state !== "running";
-    $("#btn-resume").disabled = state !== "paused";
-    $("#btn-stop").disabled = !hasActiveRun;
-    $("#btn-rescan").disabled = state === "idle" || (hasActiveRun && !run.scan_done);
+    try {
+      var hasActiveRun  = run != null;
+      var hasWork       = t.pending > 0 || t.in_progress > 0;
+      var working       = state !== "idle" || hasActiveRun || hasWork;
+
+      // \u8fd0\u884c\u5fbd\u6807
+      var badgeK = state === "running" ? "running" : state === "paused" ? "paused" : "idle";
+      $("#run-badge").outerHTML = badge(badgeK, state === "running" ? "\u8fd0\u884c\u4e2d" : state === "paused" ? "\u5df2\u6682\u505c" : "\u7a7a\u95f2");
+      $("#run-badge").classList.add("badge", "badge-" + badgeK);
+
+      // \u8fdb\u5ea6
+      var pct = d.progress_pct != null ? d.progress_pct : 0;
+      if (state === "idle" && !hasActiveRun && !hasWork) pct = 0;
+      $("#progress-bar").style.width = pct.toFixed(1) + "%";
+
+      // \u4efb\u52a1\u7edf\u8ba1
+      $("#st-tsk").textContent = t.total || 0;
+      $("#st-done").textContent = t.done || 0;
+      $("#st-fail").textContent = t.failed || 0;
+      $("#st-rate").textContent = fmtRate(d.rate_bytes_per_sec);
+
+      // \u5f53\u524d run \u660e\u7ec6
+      if (hasActiveRun) {
+        var targets = run.targets || [];
+        var targetDesc;
+        if (targets.length > 1) {
+          targetDesc = targets.length + " \u7ec4\u76ee\u5f55\u8fc1\u79fb\u4e2d";
+        } else {
+          targetDesc = esc(run.src || "") + " \u2192 " + esc(run.dst || "");
+        }
+        $("#run-detail").innerHTML =
+          "\u8fd0\u884c <b>" + esc(run.id) + "</b>\uff0c" + targetDesc +
+          "\uff0c\u626b\u63cf " +
+          (run.scan_done ? "\u5b8c\u6210" : "\u8fdb\u884c\u4e2d\uff08\u5df2\u53d1\u73b0 " + (run.scanned_tasks || 0) + " \u4e2a\u4efb\u52a1\uff09") +
+          "\uff0c\u5df2\u8fc1\u79fb <b>" + run.files_done + "</b> \u4e2a\u6587\u4ef6 / " + fmtBytes(run.bytes_done) +
+          "\uff0c\u5931\u8d25 <b>" + run.files_failed + "</b>\uff0c\u8017\u65f6 " + fmtDur(run.elapsed_ms);
+      } else if (working) {
+        $("#run-detail").textContent = hasWork ? "\u4efb\u52a1\u4ecd\u5728\u5904\u7406\u4e2d\uff08" + (t.pending || 0) + " \u7b49\u5f85\uff0c" + (t.in_progress || 0) + " \u6267\u884c\u4e2d\uff09\u3002" : "\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fc1\u79fb\u3002";
+      } else {
+        $("#run-detail").textContent = "\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fc1\u79fb\u3002";
+      }
+
+      // \u6309\u94ae\uff1a\u4efb\u4f55\u8fd0\u884c\u6001\u6216\u4ecd\u6709\u4efb\u52a1\u90fd\u7981\u6b62\u518d\u6b21\u542f\u52a8
+      $("#btn-start").disabled = state !== "idle" || hasActiveRun || hasWork;
+      $("#btn-pause").disabled = state !== "running";
+      $("#btn-resume").disabled = state !== "paused";
+      $("#btn-stop").disabled = !hasActiveRun;
+      $("#btn-rescan").disabled = state === "idle" || (hasActiveRun && !run.scan_done);
+    } catch (err) {
+      var errEl = $("#state-err");
+      if (errEl) {
+        errEl.style.display = "block";
+        errEl.textContent = "\u72b6\u6001\u6e32\u67d3\u5f02\u5e38\uff1a" + err.message;
+      }
+      throw err;
+    }
   }
 
   function setConn(ok) {
