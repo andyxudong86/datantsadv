@@ -91,9 +91,9 @@
       $("#progress-bar").style.width = pct.toFixed(1) + "%";
 
       // \u4efb\u52a1\u7edf\u8ba1
-      $("#st-tsk").textContent = t.total || 0;
-      $("#st-done").textContent = t.done || 0;
-      $("#st-fail").textContent = t.failed || 0;
+      $("#st-tsk").textContent = run ? (run.scanned_tasks || 0) : 0;
+      $("#st-done").textContent = run ? (run.files_done || 0) : 0;
+      $("#st-fail").textContent = run ? (run.files_failed || 0) : 0;
       $("#st-rate").textContent = fmtRate(d.rate_bytes_per_sec);
 
       // \u5f53\u524d run \u660e\u7ec6

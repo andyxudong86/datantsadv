@@ -71,16 +71,31 @@ func (s *Server) buildStatus() statusDTO {
 	if st.Run != nil {
 		run := toRunSummaryDTO(*st.Run)
 		dto.Run = &run
-		if total := dto.Tasks.Total; total > 0 {
-			dto.ProgressPct = float64(st.Stats.Done+st.Stats.Failed) / float64(total) * 100
-		} else {
-			dto.ProgressPct = 100
-		}
+		dto.ProgressPct = runProgressPct(run.FilesDone+run.FilesFailed, run.ScannedTasks)
 	}
 	for _, w := range st.Workers {
 		dto.Workers = append(dto.Workers, toWorkerBriefDTO(w))
 	}
 	return dto
+}
+
+// runProgressPct reports how far the active run has come, so a new run starts
+// at 0% instead of inheriting the cumulative store totals from previous runs.
+// It returns 0 until the scan has produced a task count, and clamps at 100
+// when workers also finish leftover tasks from earlier runs alongside the
+// current one.
+func runProgressPct(done, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	p := float64(done) / float64(total) * 100
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

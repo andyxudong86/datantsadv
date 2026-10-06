@@ -124,4 +124,19 @@ func TestConsoleStatusDiagnostics(t *testing.T) {
 	if strings.Contains(js, `$("#run-badge").outerHTML`) {
 		t.Fatal("app.js must not replace #run-badge via outerHTML: badge() drops the id and breaks the button updates")
 	}
+	// run stat bars must follow the active run from 0, not the store-wide
+	// cumulative totals: otherwise every new run starts showing the previous
+	// run's 完成/失败 numbers.
+	for _, want := range []string{
+		`$("#st-tsk").textContent = run ? (run.scanned_tasks || 0) : 0;`,
+		`$("#st-done").textContent = run ? (run.files_done || 0) : 0;`,
+		`$("#st-fail").textContent = run ? (run.files_failed || 0) : 0;`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing run-scoped stat feed: %s", want)
+		}
+	}
+	if strings.Contains(js, `$("#st-tsk").textContent = t.total`) {
+		t.Fatal("app.js must not show cumulative store totals in the run stat bars")
+	}
 }

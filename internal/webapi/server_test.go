@@ -169,6 +169,12 @@ func TestStatusEndpoint(t *testing.T) {
 	if _, ok := st["progress_pct"]; !ok {
 		t.Fatal("progress_pct missing")
 	}
+	// progress must be scoped to the active run (10 done + 1 failed of 15
+	// scanned = 73.33%), not the cumulative store totals (11 of 14), so a new
+	// run starts from 0 again.
+	if pct := st["progress_pct"].(float64); pct < 73.0 || pct > 73.7 {
+		t.Fatalf("progress_pct = %v, want ~73.33 (run-scoped)", pct)
+	}
 	tasks := st["tasks"].(map[string]any)
 	if tasks["done"].(float64) != 10 {
 		t.Fatalf("tasks.done = %v", tasks["done"])
