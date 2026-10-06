@@ -545,16 +545,17 @@ func (s *Store) apply(ev event) {
 				s.pending = append(s.pending, t.ID)
 				continue
 			}
-			// A previously-done file whose size or mtime changed must be
-			// re-copied: reset it to pending. Directory tasks are skipped:
-			// their mtime changes whenever a file is added and a completed
-			// mkdir does not need to run again.
+			// The planner only re-emits a task when the real destination
+			// filesystem needs work (entry missing, size/mtime mismatch,
+			// metadata or deletion pending), so a Done task arriving again must
+			// be re-run: the destination may have been replaced or removed
+			// since the earlier completion. Source-side size/mtime are not a
+			// reliable filter here — they cannot see a destination that was
+			// emptied or overwritten.
 			if r.status == Done {
-				if t.Kind == KindCopy && (r.t.Size != t.Size || r.t.ModTime != t.ModTime) {
-					r.t = t
-					r.status = Pending
-					s.pending = append(s.pending, t.ID)
-				}
+				r.t = t
+				r.status = Pending
+				s.pending = append(s.pending, t.ID)
 				continue
 			}
 			// A task that previously failed is re-enqueued on the next scan

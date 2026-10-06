@@ -81,6 +81,49 @@ func TestFailThenReingestRequeues(t *testing.T) {
 	}
 }
 
+func TestDoneThenReingestRequeues(t *testing.T) {
+	// Regression: a file recorded Done must be re-queued when an incremental
+	// re-scan emits it again, even when the source-side size/mtime are
+	// unchanged. The planner only emits when the real destination diverges
+	// (entry removed, content or mtime replaced), and the store previously
+	// suppressed such re-copies because it compared only source attributes —
+	// a destination that lost files stayed broken forever (users saw "scanned
+	// N tasks, copied nothing").
+	s := mustNew(t)
+	ts := mkTasks(2)
+	if err := s.Ingest(ts); err != nil {
+		t.Fatal(err)
+	}
+	claimed, _ := s.Claim("w1", 2)
+	var ids []string
+	for _, tk := range claimed {
+		ids = append(ids, tk.ID)
+	}
+	if err := s.Complete(ids); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Stats(); st.Done != 2 {
+		t.Fatalf("expected 2 done, got %+v", st)
+	}
+
+	// Re-ingest the exact same tasks: same id, size and mtime (source side
+	// unchanged), exactly what an incremental re-scan emits when the
+	// destination entries are missing.
+	if err := s.Ingest(ts); err != nil {
+		t.Fatal(err)
+	}
+	st := s.Stats()
+	if st.Done != 0 || st.Pending != 2 {
+		t.Fatalf("done tasks not requeued by re-scan: %+v", st)
+	}
+
+	// and they must be claimable again so workers actually re-copy them
+	got, _ := s.Claim("w2", 2)
+	if len(got) != 2 {
+		t.Fatalf("reclaimed %d tasks, want 2", len(got))
+	}
+}
+
 func TestLifecycleComplete(t *testing.T) {
 	s := mustNew(t)
 	_ = s.Ingest(mkTasks(5))
